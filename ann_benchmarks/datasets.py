@@ -43,7 +43,7 @@ def get_dataset_fn(dataset_name: str) -> str:
     return os.path.join("data", f"{dataset_name}.hdf5")
 
 
-def get_dataset(dataset_name: str, k) -> Tuple[h5py.File, int]:
+def get_dataset(dataset_name: str, k, filter) -> Tuple[h5py.File, int]:
     """
     Fetches a dataset by downloading it from a known URL or creating it locally
     if it's not already present. The dataset file is then opened for reading, 
@@ -71,7 +71,8 @@ def get_dataset(dataset_name: str, k) -> Tuple[h5py.File, int]:
     """
     #print(dataset_name)
     #raise NameError
-    hdf5_filename = f"data/datasets/dataset_imdbHQ_f0_k{k}.h5"
+    if filter is None: filter = 0
+    hdf5_filename = f"data/datasets/dataset_imdbHQ_f{filter}_k{k}.h5"
     hdf5_file = h5py.File(hdf5_filename, "r")
     
     # here for backward compatibility, to ensure old datasets can still be used with newer versions

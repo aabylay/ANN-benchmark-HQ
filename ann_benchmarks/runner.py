@@ -148,7 +148,7 @@ def run_individual_query(algo: BaseANN, X_train: numpy.array, X_test: numpy.arra
     return (attrs, results)
 
 
-def load_and_transform_dataset(dataset_name: str, k) -> Tuple[
+def load_and_transform_dataset(dataset_name: str, k, filter) -> Tuple[
         Union[numpy.ndarray, List[numpy.ndarray]],
         Union[numpy.ndarray, List[numpy.ndarray]],
         str]:
@@ -160,7 +160,7 @@ def load_and_transform_dataset(dataset_name: str, k) -> Tuple[
     Returns:
         Tuple: Transformed datasets.
     """
-    D, dimension = get_dataset(dataset_name, k)
+    D, dimension = get_dataset(dataset_name, k, filter)
     X_train = numpy.array(D["train"])
     X_test = numpy.array(D["test"])
     distance = D.attrs["distance"]
@@ -194,7 +194,7 @@ def build_index(algo: BaseANN, X_train: numpy.ndarray) -> Tuple:
     return build_time, index_size
 
 
-def run(definition: Definition, dataset_name: str, count: int, run_count: int, batch: bool) -> None:
+def run(definition: Definition, dataset_name: str, count: int, run_count: int, batch: bool, filter: str) -> None:
     """Run the algorithm benchmarking.
 
     Args:
@@ -212,7 +212,7 @@ error: query argument groups have been specified for {definition.module}.{defini
 algorithm instantiated from it does not implement the set_query_arguments \
 function"""
 
-    X_train, X_test, distance = load_and_transform_dataset(dataset_name, count)
+    X_train, X_test, distance = load_and_transform_dataset(dataset_name, count, filter)
 
     try:
         if hasattr(algo, "supports_prepared_queries"):
@@ -236,7 +236,7 @@ function"""
                 "dataset": dataset_name
             })
 
-            store_results(dataset_name, count, definition, query_arguments, descriptor, results, batch)
+            store_results(dataset_name, count, definition, query_arguments, descriptor, results, batch, filter)
     finally:
         algo.done()
 
@@ -271,6 +271,13 @@ def run_from_cmdline():
         help='If flag included, algorithms will be run in batch mode, rather than "individual query" mode.',
         action="store_true",
     )
+    # New argument to parser
+    parser.add_argument(
+        "--filter",
+        help='If flag included, milvus algorithm will look for dataset with given filter in the name.',
+        action="store_true",
+    )
+    #
     parser.add_argument("build", help='JSON of arguments to pass to the constructor. E.g. ["angular", 100]')
     parser.add_argument("queries", help="JSON of arguments to pass to the queries. E.g. [100]", nargs="*", default=[])
     args = parser.parse_args()
@@ -288,7 +295,7 @@ def run_from_cmdline():
         query_argument_groups=query_args,
         disabled=False,
     )
-    run(definition, args.dataset, args.count, args.runs, args.batch)
+    run(definition, args.dataset, args.count, args.runs, args.batch, args.filter)
 
 
 def run_docker(

@@ -88,6 +88,9 @@ def parse_arguments() -> argparse.Namespace:
         "-k", "--count", default=1, type=positive_int, help="the number of near neighbours to search for"
     )
     parser.add_argument(
+        "-filter", default=None, type=positive_int, help="allows choosing specific dataset with the filter on metadata"
+    )
+    parser.add_argument(
         "--definitions", metavar="FOLDER", help="base directory of algorithms. Algorithm definitions expected at 'FOLDER/*/config.yml'", default="ann_benchmarks/algorithms"
     )
     parser.add_argument("--algorithm", metavar="NAME", help="run only the named algorithm", default=None)
@@ -310,7 +313,7 @@ def main():
         shutil.rmtree(INDEX_DIR)
     #print(args.count)
     #raise NameError
-    dataset, dimension = get_dataset(args.dataset, args.count)
+    dataset, dimension = get_dataset(args.dataset, args.count, args.filter)
     definitions: List[Definition] = get_definitions(
         dimension=dimension,
         point_type=dataset.attrs.get("point_type", "float"),

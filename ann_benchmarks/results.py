@@ -12,7 +12,8 @@ def build_result_filepath(dataset_name: Optional[str] = None,
                           count: Optional[int] = None, 
                           definition: Optional[Definition] = None, 
                           query_arguments: Optional[Any] = None, 
-                          batch_mode: bool = False) -> str:
+                          batch_mode: bool = False,
+                          filter: str = None) -> str:
     """
     Constructs the filepath for storing the results.
 
@@ -29,6 +30,9 @@ def build_result_filepath(dataset_name: Optional[str] = None,
     d = ["results"]
     if dataset_name:
         d.append(dataset_name)
+    if filter: # adding filter to result file name 
+        if filter is None: d.append(0)
+        else: d.append(filter)
     if count:
         d.append(str(count))
     if definition:
@@ -38,7 +42,7 @@ def build_result_filepath(dataset_name: Optional[str] = None,
     return os.path.join(*d)
 
 
-def store_results(dataset_name: str, count: int, definition: Definition, query_arguments:Any, attrs, results, batch):
+def store_results(dataset_name: str, count: int, definition: Definition, query_arguments:Any, attrs, results, batch, filter):
     """
     Stores results for an algorithm (and hyperparameters) running against a dataset in a HDF5 file.
 
@@ -51,7 +55,7 @@ def store_results(dataset_name: str, count: int, definition: Definition, query_a
         results (list): Results to be stored.
         batch (bool): If True, the batch mode is activated.
     """
-    filename = build_result_filepath(dataset_name, count, definition, query_arguments, batch)
+    filename = build_result_filepath(dataset_name, count, definition, query_arguments, batch, filter)
     directory, _ = os.path.split(filename)
 
     if not os.path.isdir(directory):
