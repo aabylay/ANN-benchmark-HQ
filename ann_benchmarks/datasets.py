@@ -73,6 +73,7 @@ def get_dataset(dataset_name: str, k, filter) -> Tuple[h5py.File, int]:
     #raise NameError
     if filter is None: filter = 0
     hdf5_filename = f"data/datasets/dataset_imdbHQ_f{filter}_k{k}.h5"
+    print("Reading dataset with name:", hdf5_filename)
     hdf5_file = h5py.File(hdf5_filename, "r")
     
     # here for backward compatibility, to ensure old datasets can still be used with newer versions

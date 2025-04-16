@@ -20,7 +20,7 @@ from .results import store_results
 
 
 def run_individual_query(algo: BaseANN, X_train: numpy.array, X_test: numpy.array, distance: str, count: int, 
-                         run_count: int, batch: bool) -> Tuple[dict, list]:
+                         run_count: int, batch: bool, filter: str) -> Tuple[dict, list]:
     """Run a search query using the provided algorithm and report the results.
 
     Args:
@@ -45,7 +45,7 @@ def run_individual_query(algo: BaseANN, X_train: numpy.array, X_test: numpy.arra
         # a bit dumb but can't be a scalar since of Python's scoping rules
         n_items_processed = [0]
 
-        def single_query(v: numpy.array) -> Tuple[float, List[Tuple[int, float]]]:
+        def single_query(v: numpy.array, filter: str) -> Tuple[float, List[Tuple[int, float]]]:
             """Executes a single query on an instantiated, ANN algorithm.
 
             Args:
@@ -64,7 +64,7 @@ def run_individual_query(algo: BaseANN, X_train: numpy.array, X_test: numpy.arra
                 candidates = algo.get_prepared_query_results()
             else:
                 start = time.time()
-                candidates = algo.query(v, count)
+                candidates = algo.query(v, count, filter)
                 total = time.time() - start
 
             # make sure all returned indices are unique
@@ -123,7 +123,7 @@ def run_individual_query(algo: BaseANN, X_train: numpy.array, X_test: numpy.arra
         if batch:
             results = batch_query(X_test)
         else:
-            results = [single_query(x) for x in X_test]
+            results = [single_query(x, filter) for x in X_test]
 
         total_time = sum(time for time, _ in results)
         total_candidates = sum(len(candidates) for _, candidates in results)
@@ -204,6 +204,7 @@ def run(definition: Definition, dataset_name: str, count: int, run_count: int, b
         run_count (int): The number of runs.
         batch (bool): If true, runs in batch mode.
     """
+    print("Checking if filter is correct:", filter)
     algo = instantiate_algorithm(definition)
     assert not definition.query_argument_groups or hasattr(
         algo, "set_query_arguments"
@@ -227,7 +228,7 @@ function"""
             if query_arguments:
                 algo.set_query_arguments(*query_arguments)
             
-            descriptor, results = run_individual_query(algo, X_train, X_test, distance, count, run_count, batch)
+            descriptor, results = run_individual_query(algo, X_train, X_test, distance, count, run_count, batch, filter)
 
             descriptor.update({
                 "build_time": build_time,
@@ -275,7 +276,8 @@ def run_from_cmdline():
     parser.add_argument(
         "--filter",
         help='If flag included, milvus algorithm will look for dataset with given filter in the name.',
-        action="store_true",
+        type=str,
+        default=None,
     )
     #
     parser.add_argument("build", help='JSON of arguments to pass to the constructor. E.g. ["angular", 100]')
@@ -302,6 +304,7 @@ def run_docker(
     definition: Definition,
     dataset: str,
     count: int,
+    filter: str,
     runs: int,
     timeout: int,
     batch: bool,
@@ -325,6 +328,8 @@ def run_docker(
         str(runs),
         "--count",
         str(count),
+        "--filter",
+        str(filter),
     ]
     if batch:
         cmd += ["--batch"]

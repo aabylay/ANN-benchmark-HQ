@@ -135,7 +135,7 @@ class Milvus(BaseANN):
                 data = [v],
                 anns_field = "vector",
                 param = self.search_params,
-                filter_expr = f"avgRating > {filter}" # added for queries with filters
+                filter_expr = f"avgRating > {filter}", # added for queries with filters
                 limit = n,
                 output_fields=["id"]
             )

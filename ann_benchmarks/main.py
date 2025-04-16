@@ -68,11 +68,11 @@ def run_worker(cpu: int, mem_limit: int, args: argparse.Namespace, queue: multip
     while not queue.empty():
         definition = queue.get()
         if args.local:
-            run(definition, args.dataset, args.count, args.runs, args.batch)
+            run(definition, args.dataset, args.count, args.runs, args.batch, args.filter)
         else:
             cpu_limit = str(cpu) if not args.batch else f"0-{multiprocessing.cpu_count() - 1}"
             
-            run_docker(definition, args.dataset, args.count, args.runs, args.timeout, args.batch, cpu_limit, mem_limit)
+            run_docker(definition, args.dataset, args.count, args.filter, args.runs, args.timeout, args.batch, cpu_limit, mem_limit)
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -88,7 +88,7 @@ def parse_arguments() -> argparse.Namespace:
         "-k", "--count", default=1, type=positive_int, help="the number of near neighbours to search for"
     )
     parser.add_argument(
-        "-filter", default=None, type=positive_int, help="allows choosing specific dataset with the filter on metadata"
+        "--filter", default=None, type=positive_int, help="allows choosing specific dataset with the filter on metadata"
     )
     parser.add_argument(
         "--definitions", metavar="FOLDER", help="base directory of algorithms. Algorithm definitions expected at 'FOLDER/*/config.yml'", default="ann_benchmarks/algorithms"
@@ -304,7 +304,6 @@ def limit_algorithms(definitions: List[Definition], limit: int) -> List[Definiti
 
 def main():
     args = parse_arguments()
-
     if args.list_algorithms:
         list_algorithms(args.definitions)
         sys.exit(0)
