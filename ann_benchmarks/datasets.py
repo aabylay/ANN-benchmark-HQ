@@ -57,21 +57,21 @@ def get_dataset(dataset_name: str, k) -> Tuple[h5py.File, int]:
             the dimension of the dataset.
     """
     
-    """
+    # """
     hdf5_filename = get_dataset_fn(dataset_name)
     try:
-        #dataset_url = f"https://ann-benchmarks.com/{dataset_name}.hdf5"
-        #download(dataset_url, hdf5_filename)
+        dataset_url = f"https://ann-benchmarks.com/{dataset_name}.hdf5"
+        download(dataset_url, hdf5_filename)
     except:
         traceback.print_exc()
         print(f"Cannot download {dataset_url}")
         if dataset_name in DATASETS:
             print("Creating dataset locally")
             DATASETS[dataset_name](hdf5_filename)
-    """
+    # """
     #print(dataset_name)
     #raise NameError
-    hdf5_filename = f"data/datasets/dataset_imdbHQ_f0_k{k}.h5"
+    # hdf5_filename = f"data/datasets/dataset_imdbHQ_f0_k{k}.h5"
     hdf5_file = h5py.File(hdf5_filename, "r")
     
     # here for backward compatibility, to ensure old datasets can still be used with newer versions

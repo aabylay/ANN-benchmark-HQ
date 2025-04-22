@@ -1,0 +1,22 @@
+base:
+  args: []
+  docker_tag: ann-benchmarks-pase
+  module: ann_benchmarks.algorithms.pase.module
+
+float:
+  any:
+  - name: pase
+    docker_tag: ann-benchmarks-pase
+    module: ann_benchmarks.algorithms.pase
+    constructor: PASE
+    base_args: ['@metric']
+    disabled: false
+    run_groups:
+      M-16:
+        arg_groups: [{M: 16, efConstruction: 20}]
+        args: {}
+        query_args: [[10, 20, 40, 100]]
+#      M-24:
+#        arg_groups: [{ M: 24, efConstruction: 200}]
+#        args: {}
+#        query_args: [[ 10, 20, 40, 100]]
