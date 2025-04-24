@@ -57,7 +57,7 @@ def store_results(dataset_name: str, count: int, definition: Definition, query_a
     """
     filename = build_result_filepath(dataset_name, count, definition, query_arguments, batch, filter)
     directory, _ = os.path.split(filename)
-
+    print(f"===========\nSaving results with filename: {filename}\n===========")
     if not os.path.isdir(directory):
         os.makedirs(directory)
 
@@ -88,10 +88,14 @@ def load_all_results(dataset: Optional[str] = None,
     Yields:
         tuple: A tuple containing properties as a dictionary and an h5py file object.
     """
-    for root, _, files in os.walk(build_result_filepath(dataset, count)):
+    temp_filepath = build_result_filepath(dataset, count)
+    print(temp_filepath)
+    for root, whatisit, files in os.walk(temp_filepath):
+        print("==========================", "\n", root, "\n\n", whatisit, "\n\n", files, "\n", "==========================")
         for filename in files:
             if os.path.splitext(filename)[-1] != ".hdf5":
                 continue
+            print(root, filename)
             try:
                 with h5py.File(os.path.join(root, filename), "r+") as f:
                     properties = dict(f.attrs)

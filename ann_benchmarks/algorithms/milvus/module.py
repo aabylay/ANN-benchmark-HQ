@@ -122,7 +122,8 @@ class Milvus(BaseANN):
         self.load_collection()
 
     def query(self, v, n, filter):
-        if filter is None or filter == "0":
+        print(f"--- Filter is: avgRating > {filter}")
+        if filter is None:
             results = self.collection.search(
                 data = [v],
                 anns_field = "vector",

@@ -1,7 +1,7 @@
 import os
-from make_yaml import make_yaml
+from HQ_make_yaml import make_yaml
 
-filters = [6, 6.5, 7, 7.5, 8, 8.3, 9, 9.5]
+filters = [8.3] # [None] # [None, 6, 6.5, 7, 7.5, 8, 8.3, 9, 9.5] # [6.5, 7.5, 8.5, 9.5] # 
 k_vals  = [1, 2, 5, 10, 20, 50, 100]
 
 for filter in filters:
@@ -11,5 +11,8 @@ for filter in filters:
             ef_s = max(40, k*2)
             make_yaml(m, ef_c, ef_s)
             print(f"Running for k: {k}")
-            os.system(f"python run.py --algorithm milvus-hnsw --dataset glove-100-angular --count {k} --filter {filter}")
+            if (filter is None) or (filter == 0) or (filter == "0"):
+                os.system(f"python run.py --algorithm milvus-hnsw --dataset glove-100-angular --count {k}")
+            else:
+                os.system(f"python run.py --algorithm milvus-hnsw --dataset glove-100-angular --count {k} --filter {filter}")
             print(f"Finished for k: {k}")

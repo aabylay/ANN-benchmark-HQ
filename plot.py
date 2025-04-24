@@ -128,9 +128,12 @@ if __name__ == "__main__":
         args.output = "results/%s.png" % (args.dataset + ("-batch" if args.batch else ""))
         print("writing output to %s" % args.output)
 
-    dataset, _ = get_dataset(args.dataset, int(args.count))
+    dataset, _ = get_dataset(args.dataset, int(args.count), "6")
+    print("-------------WE ARE HERE--------------")
     count = int(args.count)
     unique_algorithms = get_unique_algorithms()
+    print("-------------WE ARE HERE--------------")
+    print(args.dataset, "\n\n", count, "\n\n", args.batch)
     results = load_all_results(args.dataset, count, args.batch)
     linestyles = create_linestyles(sorted(unique_algorithms))
     print(dataset.keys())  # See what fields are available

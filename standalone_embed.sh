@@ -40,7 +40,7 @@ EOF
         exit 1
     fi
     
-    docker run -d \
+    sudo docker run -d \
         --name milvus-standalone \
         --security-opt seccomp:unconfined \
         -e ETCD_USE_EMBED=true \
@@ -58,7 +58,7 @@ EOF
         --health-start-period=90s \
         --health-timeout=20s \
         --health-retries=3 \
-        milvusdb/milvus:v2.5.7 \
+        milvusdb/milvus:v2.5.9 \
         milvus run standalone  1> /dev/null
 }
 
@@ -66,7 +66,7 @@ wait_for_milvus_running() {
     echo "Wait for Milvus Starting..."
     while true
     do
-        res=`docker ps|grep milvus-standalone|grep healthy|wc -l`
+        res=`sudo docker ps|grep milvus-standalone|grep healthy|wc -l`
         if [ $res -eq 1 ]
         then
             echo "Start successfully."
@@ -78,17 +78,17 @@ wait_for_milvus_running() {
 }
 
 start() {
-    res=`docker ps|grep milvus-standalone|grep healthy|wc -l`
+    res=`sudo docker ps|grep milvus-standalone|grep healthy|wc -l`
     if [ $res -eq 1 ]
     then
         echo "Milvus is running."
         exit 0
     fi
 
-    res=`docker ps -a|grep milvus-standalone|wc -l`
+    res=`sudo docker ps -a|grep milvus-standalone|wc -l`
     if [ $res -eq 1 ]
     then
-        docker start milvus-standalone 1> /dev/null
+        sudo docker start milvus-standalone 1> /dev/null
     else
         run_embed
     fi

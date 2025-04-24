@@ -88,7 +88,7 @@ def parse_arguments() -> argparse.Namespace:
         "-k", "--count", default=1, type=positive_int, help="the number of near neighbours to search for"
     )
     parser.add_argument(
-        "--filter", default=None, type=positive_int, help="allows choosing specific dataset with the filter on metadata"
+        "--filter", default=None, type=str, help="allows choosing specific dataset with the filter on metadata"
     )
     parser.add_argument(
         "--definitions", metavar="FOLDER", help="base directory of algorithms. Algorithm definitions expected at 'FOLDER/*/config.yml'", default="ann_benchmarks/algorithms"

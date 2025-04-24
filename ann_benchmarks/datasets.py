@@ -71,7 +71,7 @@ def get_dataset(dataset_name: str, k, filter) -> Tuple[h5py.File, int]:
     """
     #print(dataset_name)
     #raise NameError
-    if filter is None: filter = 0
+    if filter is None or filter == "None": filter = 0
     hdf5_filename = f"data/datasets/dataset_imdbHQ_f{filter}_k{k}.h5"
     print("Reading dataset with name:", hdf5_filename)
     hdf5_file = h5py.File(hdf5_filename, "r")
