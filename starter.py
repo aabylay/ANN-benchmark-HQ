@@ -1,8 +1,8 @@
 import os
 from HQ_make_yaml import make_yaml
 
-filters = [8.3] # [None] # [None, 6, 6.5, 7, 7.5, 8, 8.3, 9, 9.5] # [6.5, 7.5, 8.5, 9.5] # 
-k_vals  = [1, 2, 5, 10, 20, 50, 100]
+filters = [None, 9] # [None] # [None, 6, 6.5, 7, 7.5, 8, 8.3, 9, 9.5] # [6.5, 7.5, 8.5, 9.5] # 
+k_vals  = [1, 10] # [1, 2, 5, 10, 20, 50, 100]
 
 for filter in filters:
     for m in [4, 16, 64]:

@@ -169,10 +169,12 @@ def load_and_transform_dataset(dataset_name: str, k, filter) -> Tuple[
     print(f"Got {len(X_test)} queries")
 
     train, test = dataset_transform(D)
-    return train, test, distance
+    train_ids = numpy.array(D["train_ids"])
+    train_attr = numpy.array(D["train_ratings"])
+    return train_ids, train, train_attr, test, distance
 
 
-def build_index(algo: BaseANN, X_train: numpy.ndarray) -> Tuple:
+def build_index(algo: BaseANN, X_train_ids: numpy.ndarray, X_train: numpy.ndarray, X_train_attr: numpy.ndarray) -> Tuple:
     """Builds the ANN index for a given ANN algorithm on the training data.
 
     Args:
@@ -184,7 +186,7 @@ def build_index(algo: BaseANN, X_train: numpy.ndarray) -> Tuple:
     """
     t0 = time.time()
     memory_usage_before = algo.get_memory_usage()
-    algo.fit(X_train)
+    algo.fit(X_train_ids, X_train, X_train_attr)
     build_time = time.time() - t0
     index_size = algo.get_memory_usage() - memory_usage_before
 
@@ -213,13 +215,13 @@ error: query argument groups have been specified for {definition.module}.{defini
 algorithm instantiated from it does not implement the set_query_arguments \
 function"""
 
-    X_train, X_test, distance = load_and_transform_dataset(dataset_name, count, filter)
+    X_train_ids, X_train, X_train_attr, X_test, distance = load_and_transform_dataset(dataset_name, count, filter)
 
     try:
         if hasattr(algo, "supports_prepared_queries"):
             algo.supports_prepared_queries()
 
-        build_time, index_size = build_index(algo, X_train)
+        build_time, index_size = build_index(algo, X_train_ids, X_train, X_train_attr)
 
         query_argument_groups = definition.query_argument_groups or [[]]  # Ensure at least one iteration
 

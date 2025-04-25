@@ -102,7 +102,7 @@ float:
           efConstruction:
           - 256
         query_args:
-        - - 200
+        - - 40
   - base_args:
     - '@metric'
     - '@dimension'

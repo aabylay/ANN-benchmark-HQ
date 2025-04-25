@@ -56,13 +56,21 @@ class Milvus(BaseANN):
             dtype=DataType.INT64,
             is_primary=True
         )
+        title_id = FieldSchema(
+            name="title_id",
+            dtype=DataType.VARCHAR
+        )
         filed_vec = FieldSchema(
             name="vector",
             dtype=DataType.FLOAT_VECTOR,
             dim=self._dim
         )
+        avg_rating = FieldSchema(
+            name="avg_rating",
+            dtype=DataType.FLOAT
+        )
         schema = CollectionSchema(
-            fields=[filed_id, filed_vec],
+            fields=[filed_id, title_id, filed_vec, avg_rating],
             description="Test milvus search",
         )
         self.collection = Collection(
@@ -72,15 +80,19 @@ class Milvus(BaseANN):
         )
         print(f"[Milvus] Create collection {self.collection.describe()} successfully!!!")
 
-    def insert(self, X):
+    def insert(self, X_ids, X, X_attr):
         # insert data
         print(f"[Milvus] Insert {len(X)} data into collection {self.collection_name}...")
         batch_size = 1000
         for i in range(0, len(X), batch_size):
             batch_data = X[i: min(i + batch_size, len(X))]
+            batch_ids = X_ids[i: min(i + batch_size, len(X))]
+            batch_attr = X_attr[i: min(i + batch_size, len(X))]
             entities = [
                 [i for i in range(i, min(i + batch_size, len(X)))],
-                batch_data.tolist()
+                batch_ids.tolist(),
+                batch_data.tolist(),
+                batch_attr.tolist()
             ]
             self.collection.insert(entities)
         self.collection.flush()
@@ -115,15 +127,16 @@ class Milvus(BaseANN):
         utility.wait_for_loading_complete(self.collection_name)
         print(f"[Milvus] Load collection {self.collection_name} successfully!!!")
 
-    def fit(self, X):
+    def fit(self, X_ids, X, X_attr):
         self.create_collection()
-        self.insert(X)
+        self.insert(X_ids, X, X_attr)
         self.create_index()
         self.load_collection()
 
     def query(self, v, n, filter):
         print(f"--- Filter is: avgRating > {filter}")
-        if filter is None:
+        if (filter is None) or (filter == 0) or (filter == "0"):
+            print("Pure vector search")
             results = self.collection.search(
                 data = [v],
                 anns_field = "vector",
@@ -132,11 +145,12 @@ class Milvus(BaseANN):
                 output_fields=["id"]
             )
         else:
+            print("Hybrid search (with Filter)")
             results = self.collection.search(
                 data = [v],
                 anns_field = "vector",
                 param = self.search_params,
-                filter_expr = f"avgRating > {filter}", # added for queries with filters
+                filter_expr = f"avg_rating > {filter}", # added for queries with filters
                 limit = n,
                 output_fields=["id"]
             )
