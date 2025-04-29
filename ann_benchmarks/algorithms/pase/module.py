@@ -263,8 +263,7 @@ class PASE(BaseANN):
 
         # Force PostgreSQL to use the index by setting costs
         self._cur.execute("SET enable_seqscan = off")
-        
-        # For angular similarity (<?>) or Euclidean distance (<#>)
+
         if self._metric == "angular":
             query = """SELECT id FROM items ORDER BY embedding <?> pase(ARRAY[%s]::float4[],0,1) LIMIT %s"""
         elif self._metric == "euclidean":
