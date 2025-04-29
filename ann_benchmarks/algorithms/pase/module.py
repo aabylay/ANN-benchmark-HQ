@@ -187,37 +187,32 @@ class PASE(BaseANN):
         # Use a different approach to insert data in batches
         # This avoids the numpy array boolean evaluation issue
         batch_size = 1000  # Process in smaller batches
+        print("Copying data using COPY command...")
         total_rows = len(X)
 
-        for batch_start in range(0, total_rows, batch_size):
-            batch_end = min(batch_start + batch_size, total_rows)
-            batch_values = []
+        # Use COPY for faster data loading
+        with cur.copy("COPY items (id, embedding) FROM STDIN WITH (FORMAT binary)") as copy:
+            copy.set_types(["int4", "float4[]"])
+            for i, embedding in enumerate(X):
+                # Convert NumPy array to list if needed
+                embedding_list = embedding.tolist() if isinstance(embedding, np.ndarray) else embedding
+                copy.write_row((i, embedding_list))
 
-            for i in range(batch_start, batch_end):
-                # Convert NumPy array to a Python list to avoid boolean context issue
-                embedding_list = X[i].tolist() if isinstance(X[i], np.ndarray) else X[i]
-                batch_values.append((i, embedding_list))
-
-            # Use executemany for batch insertion
-            cur.executemany(
-                "INSERT INTO items (id, embedding) VALUES (%s, %s)",
-                batch_values
-            )
-
-            # Print progress
-            if batch_start % 10000 == 0:
-                print(f"Inserted {batch_start}/{total_rows} vectors...")
+                # Print progress every 10000 rows
+                if i > 0 and i % 10000 == 0:
+                    print(f"Copied {i}/{total_rows} vectors...")
 
         print("Creating index...")
+        
         # Note: PASE uses slightly different index creation syntax
         if self._metric == "angular":
             cur.execute(
-                "CREATE INDEX ON items USING pase_hnsw(embedding) WITH (dim = %d, base_nb_num = %d, ef_build = %d)"
+                "CREATE INDEX pase_hnsw_idx ON items USING pase_hnsw(embedding) WITH (dim = %d, base_nb_num = %d, ef_build = %d)"
                 % (X.shape[1], self._m, self._ef_construction)
             )
         elif self._metric == "euclidean":
             cur.execute(
-                "CREATE INDEX ON items USING pase_hnsw(embedding) WITH (dim = %d, base_nb_num = %d, ef_build = %d)"
+                "CREATE INDEX pase_hnsw_idx ON items USING pase_hnsw(embedding) WITH (dim = %d, base_nb_num = %d, ef_build = %d)"
                 % (X.shape[1], self._m, self._ef_construction)
             )
 
@@ -247,18 +242,36 @@ class PASE(BaseANN):
         # Convert NumPy array to list if needed
         if isinstance(v, np.ndarray):
             v = v.tolist()
-
         # Cast the vector to float4[] explicitly to match the column type
-        self._cur.execute(
-            f"SET hnsw.ef_search = {self._ef_search}")
+        self._cur.execute(f"SET hnsw.ef_search = {self._ef_search}")
+        # self._cur.execute("SET enable_seqscan = off")
+        #
+        # # First, let's see the query plan
+        # if self._metric == "angular":
+        #     explain_query = "EXPLAIN ANALYZE SELECT id FROM items ORDER BY embedding <?> pase(ARRAY[%s]::float4[],0,1) LIMIT %s"
+        # elif self._metric == "euclidean":
+        #     explain_query = "EXPLAIN ANALYZE SELECT id FROM items ORDER BY embedding <?> pase(ARRAY[%s]::float4[],0,0) LIMIT %s"
+        # else:
+        #     raise RuntimeError(f"unknown metric {self._metric}")
+        #
+        # # Execute and print the EXPLAIN ANALYZE
+        # self._cur.execute(explain_query, (v, n))
+        # plan = self._cur.fetchall()
+        # print("\nQuery Plan:")
+        # for line in plan:
+        #     print(line[0])
 
+        # Force PostgreSQL to use the index by setting costs
+        self._cur.execute("SET enable_seqscan = off")
+        
         # For angular similarity (<?>) or Euclidean distance (<#>)
         if self._metric == "angular":
-            query = "SELECT id FROM items ORDER BY embedding <?> pase(ARRAY[%s]::float4[]) LIMIT %s"
-        else:  # euclidean
-            query = "SELECT id FROM items ORDER BY embedding <#> pase(ARRAY[%s]::float4[]) LIMIT %s"
+            query = """SELECT id FROM items ORDER BY embedding <?> pase(ARRAY[%s]::float4[],0,1) LIMIT %s"""
+        elif self._metric == "euclidean":
+            query = """SELECT id FROM items ORDER BY embedding <?> pase(ARRAY[%s]::float4[],0,0) LIMIT %s"""
+        else:
+            raise RuntimeError(f"unknown metric {self._metric}")
 
-        #print(query ,(v, n))
         self._cur.execute(query, (v, n), binary=True, prepare=True)
         return [id for id, in self._cur.fetchall()]
 
@@ -271,7 +284,7 @@ class PASE(BaseANN):
         """
         if self._cur is None:
             return 0
-        self._cur.execute("SELECT pg_relation_size('items_embedding_idx')")
+        self._cur.execute("SELECT pg_relation_size('pase_hnsw_idx')")
         return self._cur.fetchone()[0] / 1024
 
     def __str__(self) -> str:
@@ -281,6 +294,4 @@ class PASE(BaseANN):
         Returns:
             str: Formatted configuration string.
         """
-        return (f"PASE(m={self._m}, "
-                f"ef_construction={self._ef_construction}, "
-                f"ef_search={self._ef_search})")
+        return f"PASE(m={self._m}, ef_construction={self._ef_construction}, ef_search={self._ef_search})"
