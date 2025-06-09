@@ -228,7 +228,7 @@ class PASE(BaseANN):
         """
         self._ef_search = ef_search
 
-    def query(self, v: Any, n: int) -> List[int]:
+    def query(self, v: Any, n: int, filter) -> List[int]:
         """
         Perform nearest neighbor search.
 
@@ -265,13 +265,37 @@ class PASE(BaseANN):
         self._cur.execute("SET enable_seqscan = off")
 
         if self._metric == "angular":
-            query = """SELECT id FROM items ORDER BY embedding <?> pase(ARRAY[%s]::float4[],0,1) LIMIT %s"""
+            query = """
+                SELECT id 
+                FROM items 
+                WHERE (%s::BOOLEAN = FALSE OR averagerating > %s::FLOAT)
+                ORDER BY embedding <?> pase(ARRAY[%s]::float4[],0,1) 
+                LIMIT %s
+            """
         elif self._metric == "euclidean":
             query = """SELECT id FROM items ORDER BY embedding <?> pase(ARRAY[%s]::float4[],0,0) LIMIT %s"""
         else:
             raise RuntimeError(f"unknown metric {self._metric}")
 
-        self._cur.execute(query, (v, n), binary=True, prepare=True)
+        # Check if the filter is None, 0, "0", or "none" (case insensitive) and set params accordingly
+        if (filter is None or 
+            filter == 0 or 
+            filter == "0" or 
+            (isinstance(filter, str) and filter.lower() == "none")):
+            params = (False, 0.0, v, n)
+        else:
+            params = (filter, filter, v, n)
+
+        try:
+            self._cur.execute(query, params, binary=True, prepare=True)
+        else:
+            # Debug prints
+            # print(f"DEBUG: Query: {self._query}")
+            print(f"DEBUG: Params: {params[0], params[1]}")
+            print(f"DEBUG: Filter value in Params: {params[1]}, Type: {type(params[1])}")
+            print(f"DEBUG: Filter value: {filter}, Type: {type(filter)}")
+            print(f"DEBUG: Error during query execution: {str(e)}")
+            raise
         return [id for id, in self._cur.fetchall()]
 
     def get_memory_usage(self) -> float:
