@@ -4,7 +4,7 @@ import numpy as np
 
 
 def knn_threshold(data, count, epsilon):
-    print(len(data), count, epsilon)
+    # print(len(data), count, epsilon)
     return data[count - 1] + epsilon
 
 
@@ -21,7 +21,7 @@ def get_recall_values(dataset_distances, run_distances, count, threshold, epsilo
             if d <= t:
                 actual += 1
         recalls[i] = actual
-    return (np.mean(recalls) / float(count), np.std(recalls) / float(count), recalls)
+    return (np.mean(recalls) / float(count), np.std(recalls) / float(count), recalls / float(count))
 
 
 def knn(dataset_distances, run_distances, count, metrics, epsilon=1e-3):

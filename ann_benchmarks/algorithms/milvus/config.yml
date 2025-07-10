@@ -98,11 +98,11 @@ float:
       HNSW:
         args:
           M:
-          - 64
+          - 16
           efConstruction:
-          - 256
+          - 64
         query_args:
-        - - 40
+        - - 500
   - base_args:
     - '@metric'
     - '@dimension'

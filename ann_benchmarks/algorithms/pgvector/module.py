@@ -51,13 +51,23 @@ def get_pg_conn_param(
 
 class PGVector(BaseANN):
     def __init__(self, metric, method_param):
+        metric = "angular" # forced to be angular
         self._metric = metric
         self._m = method_param['M']
         self._ef_construction = method_param['efConstruction']
         self._cur = None
 
         if metric == "angular":
-            self._query = "SELECT id FROM items ORDER BY embedding <=> %s LIMIT %s"
+            self._query = """
+                SELECT id 
+                FROM items 
+                WHERE (%s::BOOLEAN = FALSE OR averagerating > %s::FLOAT)
+                ORDER BY embedding <=> %s 
+                LIMIT %s
+            """
+            # self._query = """SELECT COUNT(*) FROM items WHERE averagerating >= %s"""
+            # self._query = """SELECT COUNT(*) FROM items WHERE averagerating >= %s AND embedding <=> %s LIMIT %s"""
+            # self._query = """SELECT COUNT(*) FROM items"""
         elif metric == "euclidean":
             self._query = "SELECT id FROM items ORDER BY embedding <-> %s LIMIT %s"
         else:
@@ -81,7 +91,7 @@ class PGVector(BaseANN):
                 print("vector extension does not exist, creating")
                 cur.execute("CREATE EXTENSION vector")
 
-    def fit(self, X):
+    def fit(self, X_tid, X, X_attr):
         psycopg_connect_kwargs: Dict[str, Any] = dict(
             autocommit=True,
         )
@@ -117,17 +127,23 @@ class PGVector(BaseANN):
 
         conn = psycopg.connect(**psycopg_connect_kwargs)
         self.ensure_pgvector_extension_created(conn)
-
         pgvector.psycopg.register_vector(conn)
         cur = conn.cursor()
         cur.execute("DROP TABLE IF EXISTS items")
-        cur.execute("CREATE TABLE items (id int, embedding vector(%d))" % X.shape[1])
+        cur.execute("CREATE TABLE items (id int, embedding vector(%d), averagerating FLOAT)" % X.shape[1])
         cur.execute("ALTER TABLE items ALTER COLUMN embedding SET STORAGE PLAIN")
         print("copying data...")
-        with cur.copy("COPY items (id, embedding) FROM STDIN WITH (FORMAT BINARY)") as copy:
-            copy.set_types(["int4", "vector"])
-            for i, embedding in enumerate(X):
-                copy.write_row((i, embedding))
+        try:
+            with cur.copy("COPY items (id, embedding, averagerating) FROM STDIN WITH (FORMAT BINARY)") as copy:
+                copy.set_types(["int4", "vector", "float8"])
+                for i, embedding in enumerate(X):
+                    copy.write_row((i, embedding.tolist(), float(X_attr[i])))
+        except Exception as e:
+            print(f"ID: {i}, === SHAPE: {X_attr.shape}, === VALUE: {float(X_attr[i])}, === TYPE: {type(X_attr)}, === VALUE TYPE: {type(float(X_attr[i]))}")
+            print(f"Error during COPY: {e}")
+            raise
+        
+        
         print("creating index...")
         if self._metric == "angular":
             cur.execute(
@@ -138,16 +154,42 @@ class PGVector(BaseANN):
         else:
             raise RuntimeError(f"unknown metric {self._metric}")
         print("done!")
+        
         self._cur = cur
+        
 
 
     def set_query_arguments(self, ef_search):
-        self._ef_search = ef_search
-        self._cur.execute("SET hnsw.ef_search = %d" % ef_search)
+        # self._ef_search = ef_search
+        # self._cur.execute("SET hnsw.ef_search = %d" % ef_search)
+        pass
 
-    def query(self, v, n):
-        self._cur.execute(self._query, (v, n), binary=True, prepare=True)
-        return [id for id, in self._cur.fetchall()]
+    def query(self, v, n, filter):
+        
+        # Check if the filter is None, 0, "0", or "none" (case insensitive) and set params accordingly
+        if (filter is None or 
+            filter == 0 or 
+            filter == "0" or 
+            (isinstance(filter, str) and filter.lower() == "none")):
+            params = (False, 0.0, v, n)
+        else:
+            params = (True, filter, v, n)
+            
+        try:
+            self._cur.execute(self._query, params, binary=True, prepare=True)
+        except Exception as e:
+            # Debug prints
+            # print(f"DEBUG: Query: {self._query}")
+            print(f"DEBUG: Params: {params[0], params[1]}")
+            print(f"DEBUG: Filter value in Params: {params[1]}, Type: {type(params[1])}")
+            print(f"DEBUG: Filter value: {filter}, Type: {type(filter)}")
+            print(f"DEBUG: Error during query execution: {str(e)}")
+            raise
+        
+        # self._cur.execute(self._query, binary=True, prepare=True)
+        result = [id for id, in self._cur.fetchall()]
+        print(f"Result IDs: {result}")
+        return result
 
     def get_memory_usage(self):
         if self._cur is None:
@@ -156,4 +198,6 @@ class PGVector(BaseANN):
         return self._cur.fetchone()[0] / 1024
 
     def __str__(self):
+        try: self._ef_search
+        except AttributeError: self._ef_search = 0            
         return f"PGVector(m={self._m}, ef_construction={self._ef_construction}, ef_search={self._ef_search})"

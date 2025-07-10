@@ -188,7 +188,17 @@ def build_index(algo: BaseANN, X_train_ids: numpy.ndarray, X_train: numpy.ndarra
     memory_usage_before = algo.get_memory_usage()
     algo.fit(X_train_ids, X_train, X_train_attr)
     build_time = time.time() - t0
-    index_size = algo.get_memory_usage() - memory_usage_before
+
+    ##### IMPORTANT! #####
+    # Change index size
+    
+    # uncomment this for QUERY running:
+    # index_size = algo.get_memory_usage() - memory_usage_before 
+    
+    # uncomment this for GROUND TRUTH:
+    index_size = memory_usage_before
+
+    # END: Change index size
 
     print("Built index in", build_time)
     print("Index size: ", index_size)

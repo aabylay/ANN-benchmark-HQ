@@ -4,6 +4,8 @@ import os
 import re
 from pathlib import Path
 import numpy as np
+from ann_benchmarks.plotting.utils import compute_metrics
+
 
 def calculate_recall(neighbors, true_neighbors):
     return len(set(neighbors).intersection(set(true_neighbors))) / len(set(true_neighbors))
@@ -31,9 +33,9 @@ def process_hdf5_files(base_path, expected_lines=250):
             k_val = path_parts[-2]
             print(f"Filter:", filter_val, "--- k-value:", k_val)
             # Load true neighbors for this filter and k combination
-            true_df_path = f"data/datasets/dataset_imdbHQ_f{filter_val}_k{k_val}.h5"
+            true_df_path = f"data/dataset/dataset_imdbHQ_f{filter_val}_k{k_val}_upd.h5"
             if not os.path.exists(true_df_path): continue                
-            else: print(f"Found true results for dataset_imdbHQ_f{filter_val}_k{k_val}")
+            else: print(f"Found true results for dataset_imdbHQ_f{filter_val}_k{k_val}_upd")
 
             true_neighbors, true_distances = load_true_neighbors(true_df_path, filter_val, k_val)
             
@@ -63,10 +65,10 @@ def process_hdf5_files(base_path, expected_lines=250):
                                 print("Results:", distances[line_idx])
                                 print("TrueRes:", true_distances[line_idx])
                                 print("Results:", neighbors[line_idx])
-                                print("TrueRes:", true_neighbors[line_idx])
-                                print()
+                                print("TrueRes:", true_neighbors[line_idx], end="\n\n")
                             
                             recall = calculate_recall(neighbors[line_idx], true_neighbors[line_idx])
+                            runs = compute_metrics(true_distances, np.array(distances), "k-nn", "qps", True)
                             result_data.append({
                                 'id': line_idx,
                                 'filter': filter_val,

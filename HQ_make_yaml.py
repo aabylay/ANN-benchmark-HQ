@@ -99,3 +99,32 @@ def make_yaml(m, ef_c, ef_s, output_path="ann_benchmarks/algorithms/milvus/confi
     
     with open(output_path, 'w') as f:
         yaml.dump(data, f, sort_keys=False)
+
+
+def make_yaml_pgvec(m, ef_c, ef_s, output_path="ann_benchmarks/algorithms/pgvector/config.yml"):
+    data = {
+        "float": {
+            "any": [
+                {
+                    "base_args": ["@metric"],
+                    "constructor": "PGVector",
+                    "disabled": False,
+                    "docker_tag": "ann-benchmarks-pgvector",
+                    "module": "ann_benchmarks.algorithms.pgvector",
+                    "name": "pgvector",
+                    "run_groups": {
+                        "HNSW": {
+                            "args": {
+                                "M": [m],
+                                "efConstruction": [ef_c]
+                            },
+                            "query_args": [[ef_s]]
+                        }
+                    }
+                }
+            ]
+        }
+    }
+    
+    with open(output_path, 'w') as f:
+        yaml.dump(data, f, sort_keys=False)

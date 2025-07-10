@@ -106,7 +106,7 @@ def parse_arguments() -> argparse.Namespace:
         metavar="COUNT",
         type=positive_int,
         help="run each algorithm instance %(metavar)s times and use only" " the best result",
-        default=5,
+        default=1,
     )
     parser.add_argument(
         "--timeout",

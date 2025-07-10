@@ -58,7 +58,8 @@ class Milvus(BaseANN):
         )
         title_id = FieldSchema(
             name="title_id",
-            dtype=DataType.VARCHAR
+            dtype=DataType.VARCHAR,
+            max_length=16
         )
         filed_vec = FieldSchema(
             name="vector",
@@ -85,15 +86,17 @@ class Milvus(BaseANN):
         print(f"[Milvus] Insert {len(X)} data into collection {self.collection_name}...")
         batch_size = 1000
         for i in range(0, len(X), batch_size):
-            batch_data = X[i: min(i + batch_size, len(X))]
             batch_ids = X_ids[i: min(i + batch_size, len(X))]
+            batch_ids = [tid.decode('utf-8') for tid in batch_ids]
+            batch_data = X[i: min(i + batch_size, len(X))]
             batch_attr = X_attr[i: min(i + batch_size, len(X))]
             entities = [
                 [i for i in range(i, min(i + batch_size, len(X)))],
-                batch_ids.tolist(),
+                batch_ids,
                 batch_data.tolist(),
                 batch_attr.tolist()
             ]
+            #print(entities[1][:3])
             self.collection.insert(entities)
         self.collection.flush()
         print(f"[Milvus] {self.collection.num_entities} data has been inserted into collection {self.collection_name}!!!")

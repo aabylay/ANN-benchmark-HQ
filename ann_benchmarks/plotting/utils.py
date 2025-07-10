@@ -40,6 +40,7 @@ def create_pointset(data, xn, yn):
 
 def compute_metrics(true_nn_distances, res, metric_1, metric_2, recompute=False):
     all_results = {}
+    print(res[0])
     for i, (properties, run) in enumerate(res):
         algo = properties["algo"]
         algo_name = properties["name"]
