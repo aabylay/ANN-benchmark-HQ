@@ -1,6 +1,6 @@
 # ANN-Benchmarks HQ — Filtered Approximate Nearest Neighbor Search
 
-This repository extends [ann-benchmarks](https://github.com/erikbern/ann-benchmarks) for **filtered ANN** — approximate nearest neighbor search with attribute filters (e.g., filtering by rating, genre, year). Benchmarks evaluate recall, query latency, and throughput under varying filter selectivity.
+This repository extends [ann-benchmarks](https://github.com/erikbern/ann-benchmarks) for **Filtered ANNS** queries. Benchmarks evaluate recall, query latency, and throughput under varying filter selectivity.
 
 ## Overview
 
@@ -117,6 +117,8 @@ The ablation workflow tests how Milvus segment size (512 MB–16 GB) affects per
 - `make_yaml_ablation.py`: Generates config with segment-size-specific Docker tags
 - `ann_benchmarks/main_ablation.py`, `runner_ablation.py`, `results_ablation.py`: Core logic with segment size support
 
+NOTE: It is possible to run ablation with run.py. Pls carefully review the code before doing so.
+
 **Run ablation:**
 
 ```bash
@@ -153,13 +155,10 @@ The output CSV is used by plotting scripts.
 
 ### 2. Plotting scripts
 
-All plotting scripts expect CSVs under `results/` (or configurable paths).
+All plotting scripts expect CSVs under `results/` (or configurable paths). Examples of plotting scripts:
 
 | Script | Description |
 |--------|-------------|
-| `make_plots.py` | Basic throughput vs recall, recall vs selectivity |
-| `make_plots_results1.py` | Throughput vs recall by selectivity (for paper) |
-| `make_plots_results1_ivf.py` | Same, for IVF algorithms |
 | `make_plots_results_ALL.py` | Combined plots for all dataset sizes |
 | `make_plots_hnsw_vs_ivf_comparison.py` | HNSW vs IVF comparison |
 | `make_plots_ablation_seg16gb.py` | Ablation: 1 GB vs 16 GB segment size |
