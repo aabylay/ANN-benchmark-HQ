@@ -1,4 +1,4 @@
-import collections
+import collections 
 from dataclasses import dataclass
 import importlib
 import os
@@ -152,6 +152,7 @@ def load_configs(point_type: str, base_dir: str = "ann_benchmarks/algorithms") -
 def _get_definitions(base_dir: str = "ann_benchmarks/algorithms") -> List[Dict[str, Any]]:
     """Load algorithm configurations."""
     config_files = get_config_files(base_dir=base_dir)
+    # print(f"Config files found: {config_files}")
     configs = []
     for config_file in config_files:
         with open(config_file, 'r') as stream:

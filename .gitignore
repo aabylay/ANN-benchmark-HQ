@@ -6,14 +6,40 @@ protocol/c/fr-*
 install/*.txt
 install/*.yaml
 install/lib-*/
+# Ignore most of data/ except our custom dataset
 data/*
 *.class
 
 *.log
 
+analysis/check_ivf_hdf5.py
+analysis/check_results.py
+analysis/count_duplicates.py
+
+analysis/make_plots.py
+analysis/make_plots_poster.py
+analysis/make_plots_results1.py
+analysis/make_plots_results1_ivf.py
+
+analysis/milvus_performance_stability.md
+analysis/plots/
+analysis/print_selectivities.py
+analysis/recalculate_recall_specific_params.py
+
+delete_old.py
+delete_old2.py
+libknowhere.so
+libmilvus_core.so
+
 results/*
 !results/*.png
 
 venv
+.venv
+__pycache__
 
 .idea
+
+# Milvus/Docker volumes (may have permission issues)
+volumes/
+milvus_data/

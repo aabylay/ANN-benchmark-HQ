@@ -16,7 +16,7 @@ import psutil
 from .definitions import (Definition, InstantiationStatus, algorithm_status,
                                      get_definitions, list_algorithms)
 from .constants import INDEX_DIR
-from .datasets import DATASETS, get_dataset
+from .datasets import DATASETS, get_dataset, get_train_dataset
 from .results import build_result_filepath
 from .runner import run, run_docker
 
@@ -65,14 +65,19 @@ def run_worker(cpu: int, mem_limit: int, args: argparse.Namespace, queue: multip
     Returns:
         None
     """
+    print(f"Worker started with CPU: {cpu}, Memory limit: {mem_limit}", flush=True)
+    print("Queue size at start:", queue.qsize(), flush=True)
+    print(queue)
     while not queue.empty():
         definition = queue.get()
         if args.local:
-            run(definition, args.dataset, args.count, args.runs, args.batch, args.filter)
+            cpu_limit = str(cpu) if not args.batch else f"0-{multiprocessing.cpu_count() - 1}"
+            print(f"Running in Docker with CPU limit: {cpu_limit} and memory limit: {mem_limit}")
+            run_docker(definition, args.dataset, args.dataset_size, args.runs, args.timeout, args.batch, cpu_limit, mem_limit)
         else:
             cpu_limit = str(cpu) if not args.batch else f"0-{multiprocessing.cpu_count() - 1}"
-            
-            run_docker(definition, args.dataset, args.count, args.filter, args.runs, args.timeout, args.batch, cpu_limit, mem_limit)
+            print(f"Running in Docker with CPU limit: {cpu_limit} and memory limit: {mem_limit}")
+            run_docker(definition, args.dataset, args.dataset_size, args.runs, args.timeout, args.batch, cpu_limit, mem_limit)
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -88,7 +93,7 @@ def parse_arguments() -> argparse.Namespace:
         "-k", "--count", default=1, type=positive_int, help="the number of near neighbours to search for"
     )
     parser.add_argument(
-        "--filter", default=None, type=str, help="allows choosing specific dataset with the filter on metadata"
+        "--dataset_size", default="small", help="choose the size of the dataset to use from options: (small, medium, large)"
     )
     parser.add_argument(
         "--definitions", metavar="FOLDER", help="base directory of algorithms. Algorithm definitions expected at 'FOLDER/*/config.yml'", default="ann_benchmarks/algorithms"
@@ -112,7 +117,7 @@ def parse_arguments() -> argparse.Namespace:
         "--timeout",
         type=int,
         help="Timeout (in seconds) for each individual algorithm run, or -1" "if no timeout should be set",
-        default=2 * 3600,
+        default=200 * 3600,
     )
     parser.add_argument(
         "--local",
@@ -241,6 +246,7 @@ def create_workers_and_execute(definitions: List[Definition], args: argparse.Nam
         Exception: If the level of parallelism exceeds the available CPU count or if batch mode is on with more than 
                    one worker.
     """
+    
     cpu_count = multiprocessing.cpu_count()
     if args.parallelism > cpu_count - 1:
         raise Exception(f"Parallelism larger than {cpu_count - 1}! (CPU count minus one)")
@@ -250,15 +256,19 @@ def create_workers_and_execute(definitions: List[Definition], args: argparse.Nam
             f"Batch mode uses all available CPU resources, --parallelism should be set to 1. (Was: {args.parallelism})"
         )
 
+    print("Tasks for workers:", definitions, flush=True)
     task_queue = multiprocessing.Queue()
     for definition in definitions:
         task_queue.put(definition)
 
     memory_margin = 500e6  # reserve some extra memory for misc stuff
     mem_limit = int((psutil.virtual_memory().available - memory_margin) / args.parallelism)
+    
+    # Set num of CPUs to be used
+    cpu_usage = 48
 
     try:
-        workers = [multiprocessing.Process(target=run_worker, args=(i + 1, mem_limit, args, task_queue)) for i in range(args.parallelism)]
+        workers = [multiprocessing.Process(target=run_worker, args=(cpu_usage, mem_limit, args, task_queue)) for i in range(args.parallelism)]
         [worker.start() for worker in workers]
         [worker.join() for worker in workers]
     finally:
@@ -308,19 +318,26 @@ def main():
         list_algorithms(args.definitions)
         sys.exit(0)
 
+    count = args.count if args.count else [args.count]    
+    
     if os.path.exists(INDEX_DIR):
         shutil.rmtree(INDEX_DIR)
     #print(args.count)
     #raise NameError
-    dataset, dimension = get_dataset(args.dataset, args.count, args.filter)
+    dataset, dimension = get_train_dataset("movies", args.dataset_size)
+    
+    # print(f"Args defined: {args}", flush=True)
+    
     definitions: List[Definition] = get_definitions(
         dimension=dimension,
         point_type=dataset.attrs.get("point_type", "float"),
-        distance_metric=dataset.attrs["distance"],
+        distance_metric="angular",
         count=args.count,
         base_dir=args.definitions,
     )
     random.shuffle(definitions)
+    # print(f"Definitions 1: {definitions}", flush=True)
+    
     """
     definitions = filter_already_run_definitions(definitions, 
         dataset=args.dataset, 
@@ -329,23 +346,35 @@ def main():
         force=args.force,
     )
     """
+    
     if args.algorithm:
         logger.info(f"running only {args.algorithm}")
         definitions = [d for d in definitions if d.algorithm == args.algorithm]
 
+    # print(f"Definitions 2: {definitions}", flush=True)
+    
     if not args.local:
         definitions = filter_by_available_docker_images(definitions)
     else:
         definitions = list(filter(
             check_module_import_and_constructor, definitions
         ))
-
+    
+    # print(f"Definitions 3: {definitions}", flush=True)
     definitions = filter_disabled_algorithms(definitions) if not args.run_disabled else definitions
+    # print(f"Definitions 4: {definitions}", flush=True)
     definitions = limit_algorithms(definitions, args.max_n_algorithms)
 
+    """
     if len(definitions) == 0:
+        print(definitions)
         raise Exception("Nothing to run")
+    elif args.algorithm == "milvus-hnsw" or args.algorithm == "pgvector":
+        print(definitions)
+        raise Exception(f"Algorithm {args.algorithm} has been processed already")
     else:
         logger.info(f"Order: {definitions}")
-
+    """
+    logger.info(f"Order: {definitions}")
+    # raise Exception("Debugging")
     create_workers_and_execute(definitions, args)

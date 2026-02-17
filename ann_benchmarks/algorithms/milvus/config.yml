@@ -5,7 +5,7 @@ float:
     - '@dimension'
     constructor: MilvusFLAT
     disabled: false
-    docker_tag: ann-benchmarks-milvus
+    docker_tag: ann-benchmarks-milvus-seg16384
     module: ann_benchmarks.algorithms.milvus
     name: milvus-flat
     run_groups:
@@ -18,29 +18,27 @@ float:
     - '@dimension'
     constructor: MilvusIVFFLAT
     disabled: false
-    docker_tag: ann-benchmarks-milvus
+    docker_tag: ann-benchmarks-milvus-seg16384
     module: ann_benchmarks.algorithms.milvus
     name: milvus-ivfflat
     run_groups:
       IVFFLAT:
         args:
           nlist:
-          - 320
-          - 800
-          - 2000
-          - 5000
+          - 750
+          - 1600
         query_args:
-        - - 5
+        - - 1
+          - 5
           - 10
-          - 20
           - 50
-          - 100
+          - 300
   - base_args:
     - '@metric'
     - '@dimension'
     constructor: MilvusIVFSQ8
     disabled: false
-    docker_tag: ann-benchmarks-milvus
+    docker_tag: ann-benchmarks-milvus-seg16384
     module: ann_benchmarks.algorithms.milvus
     name: milvus-ivfsq8
     run_groups:
@@ -64,7 +62,7 @@ float:
     - '@dimension'
     constructor: MilvusIVFPQ
     disabled: false
-    docker_tag: ann-benchmarks-milvus
+    docker_tag: ann-benchmarks-milvus-seg16384
     module: ann_benchmarks.algorithms.milvus
     name: milvus-ivfpq
     run_groups:
@@ -91,24 +89,24 @@ float:
     - '@dimension'
     constructor: MilvusHNSW
     disabled: false
-    docker_tag: ann-benchmarks-milvus
+    docker_tag: ann-benchmarks-milvus-seg16384
     module: ann_benchmarks.algorithms.milvus
     name: milvus-hnsw
     run_groups:
       HNSW:
         args:
           M:
-          - 16
+          - 0
           efConstruction:
-          - 64
+          - null
         query_args:
-        - - 500
+        - null
   - base_args:
     - '@metric'
     - '@dimension'
     constructor: MilvusSCANN
     disabled: false
-    docker_tag: ann-benchmarks-milvus
+    docker_tag: ann-benchmarks-milvus-seg16384
     module: ann_benchmarks.algorithms.milvus
     name: milvus-scann
     run_groups:

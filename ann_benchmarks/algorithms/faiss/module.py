@@ -5,14 +5,33 @@ import faiss
 import numpy
 import sklearn.preprocessing
 
+from faiss import swig_ptr
 from ..base.module import BaseANN
 
 
 class Faiss(BaseANN):
-    def query(self, v, n):
+    def query(self, v, n, fvalue = ["No_filter"], X_attr = None):
         if self._metric == "angular":
             v /= numpy.linalg.norm(v)
-        D, I = self.index.search(numpy.expand_dims(v, axis=0).astype(numpy.float32), n)
+        if fvalue == ["No_filter"]:
+            pass
+            D, I = self.index.search(numpy.expand_dims(v, axis=0).astype(numpy.float32), n)
+        else:
+            """
+            D = numpy.empty((1, n), dtype=numpy.float32)
+            I = numpy.empty((1, n), dtype=numpy.int64)
+            v = numpy.expand_dims(v, axis=0).astype('float32')
+            self.index.filtered_search(1, swig_ptr(v), n, swig_ptr(D), swig_ptr(I), float(fvalue[2]))
+            """
+            # print("Attr value:", X_attr)
+            search_params = faiss.SearchParametersIVF()
+            bitmap_bool = X_attr >= float(fvalue[2])
+            bitmap = numpy.packbits(bitmap_bool, bitorder='little')
+            bitmap = numpy.ascontiguousarray(bitmap, dtype=numpy.uint8)
+            sel = faiss.IDSelectorBitmap(bitmap)
+            search_params.nprobe = self.index.nprobe
+            search_params.sel = sel
+            D, I = self.index.search(numpy.expand_dims(v, axis=0).astype(numpy.float32), n, params=search_params)
         return I[0]
 
     def batch_query(self, X, n):
@@ -53,18 +72,28 @@ class FaissIVF(Faiss):
         self._n_list = n_list
         self._metric = metric
 
-    def fit(self, X):
+    def fit(self, X_ids, X, X_att, dataset_type): # to do
+        faiss.omp_set_num_threads(48)
+        print("Index params:", self._n_list)
+        d = int(X.shape[1])  # Cast to native int
+        nlist = int(self._n_list["clusters"])  # Cast to native int (handles any upstream float)
+        
+        self.quantizer = faiss.IndexFlatL2(d)
+        self.index = faiss.IndexIVFFlat(self.quantizer, d, nlist)
+
         if self._metric == "angular":
             X = sklearn.preprocessing.normalize(X, axis=1, norm="l2")
 
         if X.dtype != numpy.float32:
             X = X.astype(numpy.float32)
 
-        self.quantizer = faiss.IndexFlatL2(X.shape[1])
-        index = faiss.IndexIVFFlat(self.quantizer, X.shape[1], self._n_list, faiss.METRIC_L2)
-        index.train(X)
-        index.add(X)
-        self.index = index
+        # X_att = X_att.astype(numpy.float32)
+        
+        self.index.train(X)
+        self.index.add(X)
+        # self.index.add_att(X.shape[0], swig_ptr(X_att)) # new line
+        # self.index = index
+        
 
     def set_query_arguments(self, n_probe):
         faiss.cvar.indexIVF_stats.reset()
@@ -72,10 +101,10 @@ class FaissIVF(Faiss):
         self.index.nprobe = self._n_probe
 
     def get_additional(self):
-        return {"dist_comps": faiss.cvar.indexIVF_stats.ndis + faiss.cvar.indexIVF_stats.nq * self._n_list}  # noqa
+        return {"dist_comps": faiss.cvar.indexIVF_stats.ndis + faiss.cvar.indexIVF_stats.nq * self._n_list["clusters"]}  # noqa
 
     def __str__(self):
-        return "FaissIVF(n_list=%d, n_probe=%d)" % (self._n_list, self._n_probe)
+        return "FaissIVF(n_list=%d, n_probe=%d)" % (self._n_list["clusters"], self._n_probe)
 
 
 class FaissIVFPQfs(Faiss):

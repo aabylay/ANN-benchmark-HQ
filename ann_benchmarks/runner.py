@@ -11,16 +11,21 @@ import docker
 import numpy
 import psutil
 
+import re
+
 from ann_benchmarks.algorithms.base.module import BaseANN
 
 from .definitions import Definition, instantiate_algorithm
-from .datasets import DATASETS, get_dataset
+from .datasets import DATASETS, get_dataset, get_train_dataset, get_filters, get_workload_dataset
 from .distance import dataset_transform, metrics
+
 from .results import store_results
+# Uncomment this to import results for ablation study
+# from .results_ablation import store_results
 
 
 def run_individual_query(algo: BaseANN, X_train: numpy.array, X_test: numpy.array, distance: str, count: int, 
-                         run_count: int, batch: bool, filter: str) -> Tuple[dict, list]:
+                         run_count: int, batch: bool, filter: str, X_attr: numpy.array = None, faiss_algo: bool = False) -> Tuple[dict, list]:
     """Run a search query using the provided algorithm and report the results.
 
     Args:
@@ -64,10 +69,22 @@ def run_individual_query(algo: BaseANN, X_train: numpy.array, X_test: numpy.arra
                 candidates = algo.get_prepared_query_results()
             else:
                 start = time.time()
-                candidates = algo.query(v, count, filter)
+                if faiss_algo and filter != ["No_filter"]:
+                    candidates = algo.query(v, count, filter, X_attr)
+                else:
+                    #if filter != ["No_filter"]:
+                    #    print("--------------------------------")
+                    #    print("Algo:", faiss_algo, "Filter:", filter)
+                    candidates = algo.query(v, count, filter)
                 total = time.time() - start
+                # print("Candidates:", candidates)
+                # raise Exception("Debugging")
+            
+            # Early return for query plan
+            # return (total, candidates) 
 
-            # make sure all returned indices are unique
+            # make sure all returned indices are unique and valid (drop -1 for not found cases)
+            candidates = numpy.delete(candidates, numpy.where(candidates == -1))                
             assert len(candidates) == len(set(candidates)), "Implementation returned duplicated candidates"
 
             candidates = [
@@ -123,7 +140,37 @@ def run_individual_query(algo: BaseANN, X_train: numpy.array, X_test: numpy.arra
         if batch:
             results = batch_query(X_test)
         else:
+            """
+            print("checking shapes...")
+            print(X_test.shape)
+            print(X_test[:1].shape)
+            print(X_test[0].shape)
+            print(X_test[:, 0].shape)
+            print([x.shape for x in X_test[:1]])
+            print([x.shape for x in X_test[:2]])
+            
+            for x in X_test:
+                print(x.shape)
+                break 
+            
+            raise Exception("Debugging")
+            """
+
             results = [single_query(x, filter) for x in X_test]
+            
+            # NOTE: X_test[idx] is for query plan testing only, should be X_test for actual experiments
+            # Uncomment this for query plan testing only (replaces vector numbers with "vector" text)
+            """
+            random_index = numpy.random.randint(0, len(X_test) - 1)
+            results = [single_query(x, filter) for x in [X_test[random_index]]]
+            
+            for i, result in enumerate(results):
+                # replace pattern f'[{float numbers array where at least 10 numbers are present}]' with text '[vector]'
+                # Pattern matches arrays like [-0.012313394,-0.046120428,...] including scientific notation
+                vector_pattern = r'\[-?\d+\.?\d*(?:[eE][+-]?\d+)?(?:,-?\d+\.?\d*(?:[eE][+-]?\d+)?)+\]'
+                processed_candidates = [re.sub(vector_pattern, '[vector]', candidate) for candidate in result[1]]
+                results[i] = (result[0], processed_candidates)
+            """
 
         total_time = sum(time for time, _ in results)
         total_candidates = sum(len(candidates) for _, candidates in results)
@@ -172,9 +219,119 @@ def load_and_transform_dataset(dataset_name: str, k, filter) -> Tuple[
     train_ids = numpy.array(D["train_ids"])
     train_attr = numpy.array(D["train_ratings"])
     return train_ids, train, train_attr, test, distance
+    
+# --- NEW CODE: START ---------------------------------------------------------------------------------
+
+# Function to load the training dataset based on the dataset type.
+def load_train_dataset(dataset_type: str, dataset_size: str) -> Tuple[
+        numpy.ndarray, 
+        numpy.ndarray, 
+        numpy.ndarray]:
+    """Loads the training dataset.
+    
+    Args:
+        dataset_type (str): The type of the dataset.
+
+    Returns:
+        Tuple: The training vectors, IDs, attributes, and dimension.
+    """
+
+    D, dimension = get_train_dataset(dataset_type, dataset_size)
+
+    if dataset_type == "movies":
+        train_vecs = numpy.array(D["train_storyline_vec"])
+        train_ids = numpy.array(D["train_title_id"])
+        train_attr1 = numpy.array(D["train_avgRating"])
+        train_attr2 = numpy.array(D["train_is_adult"])
+        train_attr3 = numpy.array(D["train_genre"])
+        train_attr4 = numpy.array(D["train_num_votes"])
+        train_attr5 = numpy.array(D["train_start_year"])
+    elif dataset_type == "reviews":
+        train_vecs = numpy.array(D["train_review_vec"])
+        train_ids = numpy.array(D["train_review_ids"])
+        train_attr1 = numpy.array(D["train_title_ids"])
+        train_attr2 = numpy.array(D["train_user_ids"])
+        train_attr3 = numpy.array(D["train_up_votes"])
+        train_attr4 = numpy.array(D["train_down_votes"])    
+        train_attr5 = numpy.array(D["train_total_votes"])
+
+    train_attrs = numpy.array([train_attr1, train_attr2, train_attr3, train_attr4, train_attr5])
+    print(f"Got a train set with ***{dataset_type}*** of size: ({train_vecs.shape[0]} * {dimension})")
+    return train_ids, train_vecs, train_attrs, dimension
 
 
-def build_index(algo: BaseANN, X_train_ids: numpy.ndarray, X_train: numpy.ndarray, X_train_attr: numpy.ndarray) -> Tuple:
+# Function to load a workload dataset based on the dataset type and filter.
+def load_workload_dataset(dataset_type: str, filter_id: str, dataset_size: str) -> Tuple[numpy.ndarray, numpy.ndarray]:
+    """Loads the workload dataset based on the dataset type and filter.
+
+    Args:
+        dataset_type (str): The type of the dataset.
+        filter (str): The filter to apply.
+
+    Returns:
+        Tuple: The test data and distance metric.
+    """
+    Q = get_workload_dataset(dataset_type, filter_id, dataset_size)
+    X_test = numpy.array(Q["test"])
+    distance = "angular"
+    print(f"Got a test set of size ({X_test.shape[0]} * {X_test.shape[1]})")
+    return X_test, distance
+
+
+# Function to load filters for a specific dataset type.
+def load_filters(dataset_type: str, dataset_size: str) -> Tuple[List[int], List[str]]:
+    """Loads the filters for a specific dataset type.
+
+    Args:
+        dataset_type (str): The type of the dataset.
+
+    Returns:
+        Tuple: A tuple containing filter IDs and filter strings.
+    """
+    F = get_filters(dataset_type, dataset_size)
+    # filter_ids = numpy.array(F["filter_ids"])
+    filters = numpy.array(F["filters"])
+    filters = [f.decode("utf-8") if isinstance(f, bytes) else f for f in filters]
+    filter_ids = [int(fid) for fid in range(len(filters))]
+    print(f"Got {len(filters)} filters for dataset type {dataset_type}")
+    return filter_ids, filters
+
+
+# Function to compile a filter string into a list of selection parts.
+def compile_filter(filter: str) -> List[str]:
+    # remove all whitespace from the filter string
+    print(f"Compiling filter: {filter}")
+    if filter == ["No_filter"]: return filter
+    elif filter == "No_filter": return [filter]
+    
+    filter = filter.replace(" ", "")
+    # each filter part then should be split in three parts: attribute, operator, value
+    # operators include '=', '!=', '<', '>', '<=', '>='
+    if '<=' in filter:
+        attr, value = filter.split('<=')
+        compiled_filter = [attr.strip(), '<=', value.strip()]
+    elif '>=' in filter:
+        attr, value = filter.split('>=')
+        compiled_filter = [attr.strip(), '>=', value.strip()]
+    elif '!=' in filter:
+        attr, value = filter.split('!=')
+        compiled_filter = [attr.strip(), '!=', value.strip()]    
+    elif "=" in filter:
+        attr, value = filter.split("=")
+        compiled_filter = [attr.strip(), '=', value.strip()]
+    elif '<' in filter:
+        attr, value = filter.split('<')
+        compiled_filter = [attr.strip(), '<', value.strip()]
+    elif '>' in filter:
+        attr, value = filter.split('>')
+        compiled_filter = [attr.strip(), '>', value.strip()]
+    else:
+        raise ValueError(f"Unknown filter format: {filter}")
+    return compiled_filter
+
+# --- NEW CODE: END ---------------------------------------------------------------------------------
+
+def build_index(algo: BaseANN, X_train_ids: numpy.ndarray, X_train: numpy.ndarray, X_attrs: numpy.ndarray, dataset_type: str, algo_name="") -> Tuple:
     """Builds the ANN index for a given ANN algorithm on the training data.
 
     Args:
@@ -186,37 +343,56 @@ def build_index(algo: BaseANN, X_train_ids: numpy.ndarray, X_train: numpy.ndarra
     """
     t0 = time.time()
     memory_usage_before = algo.get_memory_usage()
-    algo.fit(X_train_ids, X_train, X_train_attr)
+    print("Memory usage before building index: ", memory_usage_before)
+    if dataset_type == "movies":
+        X_attr = X_attrs[0]
+    elif dataset_type == "reviews":
+        X_attr = X_attrs[4]
+        print("--- ATTR FOR REVIEW ---:", X_attr[0], type(X_attr[0]), type(X_attr))
+    algo.fit(X_train_ids, X_train, X_attr, dataset_type)
+
+    if algo_name == "milvus-ivfflat" or algo_name == "milvus-hnsw":
+        time.sleep(3)
+        memory_usage_before = algo.get_memory_usage()
+        print("Milvus memory usage before building index:", memory_usage_before)
+        algo.fit2()
+        print("Loaded Milvus collection successfully!!!")
+
     build_time = time.time() - t0
 
     ##### IMPORTANT! #####
     # Change index size
     
     # uncomment this for QUERY running:
-    # index_size = algo.get_memory_usage() - memory_usage_before 
+    memory_usage_after = algo.get_memory_usage()
+    print("Memory usage after building index: ", memory_usage_after)
+    index_size = memory_usage_after - memory_usage_before 
     
     # uncomment this for GROUND TRUTH:
-    index_size = memory_usage_before
+    # index_size = memory_usage_before
 
     # END: Change index size
-
     print("Built index in", build_time)
-    print("Index size: ", index_size)
+    print("Index size: ", index_size, flush=True)
 
     return build_time, index_size
 
 
-def run(definition: Definition, dataset_name: str, count: int, run_count: int, batch: bool, filter: str) -> None:
+# --- CHANGE: The main run function to support filters -------------------------------
+
+# run function to check query plans in PG-Vector
+'''
+def run(definition: Definition, dataset_name: str, dataset_size: str, run_count: int, batch: bool) -> None:
     """Run the algorithm benchmarking.
 
     Args:
         definition (Definition): The algorithm definition.
         dataset_name (str): The name of the dataset.
-        count (int): The number of results to return.
+        max_k (int): The maximum number of nearest neighbors to return.
         run_count (int): The number of runs.
         batch (bool): If true, runs in batch mode.
     """
-    print("Checking if filter is correct:", filter)
+    # Map dataset sizes to their corresponding names for paths
     algo = instantiate_algorithm(definition)
     assert not definition.query_argument_groups or hasattr(
         algo, "set_query_arguments"
@@ -225,33 +401,161 @@ error: query argument groups have been specified for {definition.module}.{defini
 algorithm instantiated from it does not implement the set_query_arguments \
 function"""
 
-    X_train_ids, X_train, X_train_attr, X_test, distance = load_and_transform_dataset(dataset_name, count, filter)
+    for dataset_type in ["movies", "reviews"]: # hardcoded for now, can be changed later ["movies", "reviews"]
+        print(f"Running on dataset type: {dataset_type}")
+        X_train_ids, X_train, X_attrs, dimension = load_train_dataset(dataset_type, dataset_size)
+        filter_ids, filters = load_filters(dataset_type, dataset_size)
 
-    try:
-        if hasattr(algo, "supports_prepared_queries"):
-            algo.supports_prepared_queries()
+        try:
+            if hasattr(algo, "supports_prepared_queries"):
+                algo.supports_prepared_queries()
 
-        build_time, index_size = build_index(algo, X_train_ids, X_train, X_train_attr)
+            build_time, index_size = build_index(algo, X_train_ids, X_train, X_attrs, dataset_type)
 
-        query_argument_groups = definition.query_argument_groups or [[]]  # Ensure at least one iteration
+            for att_idx in [0, 1]:
+                if att_idx: algo.fit_idx(dataset_type)
+                for fid, ff in zip(filter_ids, filters):
+                    kk_values = [10]
+                    X_test, distance = load_workload_dataset(dataset_type, fid, dataset_size)
+                    ff = compile_filter(ff)
+                    print(f"Running with filter: {ff}")
+                    # if ff == ['No_filter']:
+                    #    print("Skipping filter for No_filter")
+                    #    continue
+                    for kk in kk_values:
+                        query_argument_groups = definition.query_argument_groups.copy() or [[]]  # Ensure at least one iteration
+                        extra_query_arguments = [[k] for k in kk_values[:-1] if k >= kk] # except last k value
+                        # append query_argument_groups with extra_query_arguments
+                        query_argument_groups.extend(extra_query_arguments)
+                        print("Running on query argument groups:", query_argument_groups)
+                        
+                        for pos, query_arguments in enumerate(query_argument_groups, 1): 
+                        
+                            print(f"Running query argument group {pos} of {len(query_argument_groups)}...")
+                            if query_arguments:
+                                algo.set_query_arguments(*query_arguments)
+                                
+                                for q_id in range(3):
+                                    descriptor, results = run_individual_query(algo, X_train, X_test, distance, kk, run_count, batch, ff)
+                                    # print("Results:", results)
+                                    # raise Exception("Debugging")
 
-        for pos, query_arguments in enumerate(query_argument_groups, 1):
-            print(f"Running query argument group {pos} of {len(query_argument_groups)}...")
-            if query_arguments:
-                algo.set_query_arguments(*query_arguments)
-            
-            descriptor, results = run_individual_query(algo, X_train, X_test, distance, count, run_count, batch, filter)
+                                    descriptor.update({
+                                        "build_time": build_time,
+                                        "index_size": index_size,
+                                        "algo": definition.algorithm,
+                                        "dataset": dataset_name
+                                    })
 
-            descriptor.update({
-                "build_time": build_time,
-                "index_size": index_size,
-                "algo": definition.algorithm,
-                "dataset": dataset_name
-            })
+                                    print(f"======= Query plan for the following search parameters:")
+                                    print(f"======= Dataset type: {dataset_type}, Dataset size: {dataset_size}, M / EF Construction: {definition.arguments[1]}")
+                                    print(f"======= Filter: {ff}, K: {kk}, EF Search: {query_arguments[0]}, K: {kk}, Att idx: {att_idx}")
+                                    print(f"======= Results\n: {results}")
+                                    # store_results(dataset_name, kk, definition, query_arguments, descriptor, results, batch, fid, dataset_size, dataset_type, att_idx)
+                    
 
-            store_results(dataset_name, count, definition, query_arguments, descriptor, results, batch, filter)
-    finally:
-        algo.done()
+        finally:
+            algo.done()
+'''
+
+# run function changed to support filters
+def run(definition: Definition, dataset_name: str, dataset_size: str, run_count: int, batch: bool, segment_size: Optional[int] = None) -> None:
+    """Run the algorithm benchmarking.
+
+    Args:
+        definition (Definition): The algorithm definition.
+        dataset_name (str): The name of the dataset.
+        max_k (int): The maximum number of nearest neighbors to return.
+        run_count (int): The number of runs.
+        batch (bool): If true, runs in batch mode.
+    """
+    # Map dataset sizes to their corresponding names for paths
+    algo = instantiate_algorithm(definition)
+    assert not definition.query_argument_groups or hasattr(
+        algo, "set_query_arguments"
+    ), f"""\
+error: query argument groups have been specified for {definition.module}.{definition.constructor}({definition.arguments}), but the \
+algorithm instantiated from it does not implement the set_query_arguments \
+function"""
+
+    for dataset_type in ["movies", "reviews"]: # hardcoded for now, can be changed later ["movies", "reviews"]
+        print(f"Running on dataset type: {dataset_type}")
+        X_train_ids, X_train, X_attrs, dimension = load_train_dataset(dataset_type, dataset_size)
+        filter_ids, filters = load_filters(dataset_type, dataset_size)
+
+        try:
+            if hasattr(algo, "supports_prepared_queries"):
+                algo.supports_prepared_queries()
+                
+            build_time, index_size = build_index(algo, X_train_ids, X_train, X_attrs, dataset_type, definition.algorithm)
+            # need to skip the rest for index building stats only
+
+            for att_idx in [0]: # [0 - for no attr idx, | 1 - for attr idx]
+                if att_idx: algo.fit_idx(dataset_type)
+                for fid, ff in zip(filter_ids, filters):
+                    kk_values = [10, 40, 100, 1]
+                    X_test, distance = load_workload_dataset(dataset_type, fid, dataset_size)
+                    ff = compile_filter(ff)
+                    print(f"Running with filter: {ff}")
+                    # kk = 1
+                    # if ff == ['No_filter']:
+                    #    print("Skipping filter for No_filter")
+                    #    continue
+                    for kk in kk_values:
+                        query_argument_groups = definition.query_argument_groups.copy() or [[]]  # Ensure at least one iteration
+                        print(definition.algorithm)
+                        if definition.algorithm in ["pgvector_ivf", "faiss-ivf", "milvus-ivfflat"]:
+                            if dataset_type == "reviews":
+                                extra_query_arguments = [[query_argument_groups[-1][-1] * 2]] # probes
+                            else: extra_query_arguments = []
+                        else:
+                            extra_query_arguments = [[k] for k in kk_values[:-1] if k >= kk] # except last k value
+                        # print(extra_query_arguments)
+                        # append query_argument_groups with extra_query_arguments
+                        query_argument_groups.extend(extra_query_arguments)
+                        print("Running on query argument groups:", query_argument_groups)
+                        
+                        for pos, query_arguments in enumerate(query_argument_groups, 1): 
+                        
+                            print(f"Running query argument group {pos} of {len(query_argument_groups)}...")
+                            if query_arguments:
+                                algo.set_query_arguments(*query_arguments)
+                                
+                                if definition.algorithm in ["faiss-ivf", "hnsw(faiss)"] and ff != ["No_filter"]:
+                                    # Select the correct attribute array that matches what was used in build_index
+                                    if dataset_type == "movies":
+                                        X_attr = X_attrs[0]
+                                    elif dataset_type == "reviews":
+                                        X_attr = X_attrs[4]
+                                    X_attr = X_attr.astype(numpy.float32)
+                                    descriptor, results = run_individual_query(algo, X_train, X_test, distance, kk, run_count, batch, ff, X_attr, True)
+                                else:
+                                    #if ff != ["No_filter"]:
+                                    #    print("\n", "-"*50, "\nRunning individual query...")
+                                    #    print("Filter:", ff, "| Algo:", definition.algorithm, "Not in:", ["faiss-ivf", "hnsw(faiss)"])
+                                        
+                                    descriptor, results = run_individual_query(algo, X_train, X_test, distance, kk, run_count, batch, ff)
+                                
+                                # print("Results:", results)
+                                # raise Exception("Debugging")
+
+                                descriptor.update({
+                                    "build_time": build_time,
+                                    "index_size": index_size,
+                                    "algo": definition.algorithm,
+                                    "dataset": dataset_name
+                                })
+
+                                store_results(dataset_name, kk, definition, query_arguments, descriptor, results, batch, fid, dataset_size, dataset_type, att_idx, segment_size)
+                                
+                    
+        finally: # making sure that milvus finished and didn't crash
+            if dataset_type == "reviews" and definition.algorithm == "milvus-ivfflat":
+                algo.done(final_call=True)
+            else:
+                algo.done()
+
+# --------------------------------------------------------------
 
 def run_from_cmdline():
     """Calls the function `run` using arguments from the command line. See `ArgumentParser` for 
@@ -270,9 +574,10 @@ def run_from_cmdline():
         "--module", help='Python module containing algorithm. E.g. "ann_benchmarks.algorithms.annoy"', required=True
     )
     parser.add_argument("--constructor", help='Constructer to load from modulel. E.g. "Annoy"', required=True)
-    parser.add_argument(
-        "--count", help="K: Number of nearest neighbours for the algorithm to return.", required=True, type=int
-    )
+    #parser.add_argument(
+    #    "--max_k", help="K: Max number of nearest neighbours for the algorithm to return.", required=True, type=int
+    #)
+    parser.add_argument("--dataset_size", choices=["large", "medium", "small"], help="Choose dataset size from: large, medium, small", required=True)
     parser.add_argument(
         "--runs",
         help="Number of times to run the algorihm. Will use the fastest run-time over the bunch.",
@@ -284,14 +589,16 @@ def run_from_cmdline():
         help='If flag included, algorithms will be run in batch mode, rather than "individual query" mode.',
         action="store_true",
     )
+    parser.add_argument("--segment_size", type=int, default=None,
+                        help="Milvus segment size in MB for ablation study (extracted from docker_tag when running from host)")
     # New argument to parser
     parser.add_argument(
         "--filter",
-        help='If flag included, milvus algorithm will look for dataset with given filter in the name.',
+        help='If flag included, algorithms will look for dataset with given filter in the name.',
         type=str,
         default=None,
     )
-    #
+    
     parser.add_argument("build", help='JSON of arguments to pass to the constructor. E.g. ["angular", 100]')
     parser.add_argument("queries", help="JSON of arguments to pass to the queries. E.g. [100]", nargs="*", default=[])
     args = parser.parse_args()
@@ -309,14 +616,13 @@ def run_from_cmdline():
         query_argument_groups=query_args,
         disabled=False,
     )
-    run(definition, args.dataset, args.count, args.runs, args.batch, args.filter)
+    run(definition, args.dataset, args.dataset_size, args.runs, args.batch, args.segment_size)
 
 
 def run_docker(
     definition: Definition,
     dataset: str,
-    count: int,
-    filter: str,
+    dataset_size: str,
     runs: int,
     timeout: int,
     batch: bool,
@@ -327,6 +633,14 @@ def run_docker(
 
     See `run_from_cmdline` for details on the args.
     """
+    # Extract segment size from docker_tag (e.g., "ann-benchmarks-milvus-seg16384" -> 16384)
+    segment_size = 1024  # default
+    if definition.docker_tag and "-seg" in definition.docker_tag:
+        try:
+            segment_size = int(definition.docker_tag.split("-seg")[-1])
+        except ValueError:
+            pass
+
     cmd = [
         "--dataset",
         dataset,
@@ -338,10 +652,10 @@ def run_docker(
         definition.constructor,
         "--runs",
         str(runs),
-        "--count",
-        str(count),
-        "--filter",
-        str(filter),
+        "--dataset_size",
+        dataset_size,
+        "--segment_size",
+        str(segment_size),
     ]
     if batch:
         cmd += ["--batch"]
@@ -351,7 +665,10 @@ def run_docker(
     client = docker.from_env()
     if mem_limit is None:
         mem_limit = psutil.virtual_memory().available
-
+    print("Running with CPU limit:", cpu_limit, "and memory limit:", mem_limit)
+    # Pass host project dir so the container can rewrite docker-compose.yml
+    # volume paths to be accessible by snap Docker (which can't see /tmp)
+    host_project_dir = os.path.abspath(".")
     container = client.containers.run(
         definition.docker_tag,
         cmd,
@@ -361,6 +678,9 @@ def run_docker(
             os.path.abspath("data"): {"bind": "/home/app/data", "mode": "ro"},
             os.path.abspath("results"): {"bind": "/home/app/results", "mode": "rw"},
         },
+        environment={
+            "HOST_PROJECT_DIR": host_project_dir,
+        },
         network_mode="host",
         cpuset_cpus=cpu_limit,
         mem_limit=mem_limit,
@@ -368,6 +688,10 @@ def run_docker(
     )
     logger = logging.getLogger(f"annb.{container.short_id}")
 
+    # NEW: check installed packages in the container
+    # pip_list_result = container.exec_run("pip list")
+    # logger.info(f"Installed packages in container {container.short_id}:\n{pip_list_result.output.decode()}")
+    
     logger.info(
         "Created container %s: CPU limit %s, mem limit %s, timeout %d, command %s"
         % (container.short_id, cpu_limit, mem_limit, timeout, cmd)

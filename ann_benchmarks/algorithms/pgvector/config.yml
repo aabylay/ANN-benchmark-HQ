@@ -11,8 +11,11 @@ float:
       HNSW:
         args:
           M:
-          - 16
+          - 15
           efConstruction:
-          - 64
+          - 75
         query_args:
-        - - 500
+        - - 100
+          - 200
+          - 500
+          - 1000

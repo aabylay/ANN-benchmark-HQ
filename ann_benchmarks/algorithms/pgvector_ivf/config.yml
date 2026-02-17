@@ -1,0 +1,21 @@
+float:
+  any:
+  - base_args:
+    - '@metric'
+    constructor: PGVector
+    disabled: false
+    docker_tag: ann-benchmarks-pgvector
+    module: ann_benchmarks.algorithms.pgvector_ivf
+    name: pgvector_ivf
+    run_groups:
+      IVFFlat:
+        args:
+          clusters:
+          - 750
+          - 1600
+        query_args:
+        - - 1
+          - 5
+          - 10
+          - 50
+          - 300

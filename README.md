@@ -1,184 +1,225 @@
-Benchmarking nearest neighbors
-==============================
+# ANN-Benchmarks HQ — Filtered Approximate Nearest Neighbor Search
 
-[![Build Status](https://img.shields.io/github/actions/workflow/status/erikbern/ann-benchmarks/benchmarks.yml?branch=main&style=flat-square)](https://github.com/erikbern/ann-benchmarks/actions/workflows/benchmarks.yml)
+This repository extends [ann-benchmarks](https://github.com/erikbern/ann-benchmarks) for **filtered ANN** — approximate nearest neighbor search with attribute filters (e.g., filtering by rating, genre, year). Benchmarks evaluate recall, query latency, and throughput under varying filter selectivity.
 
-Doing fast searching of nearest neighbors in high dimensional spaces is an increasingly important problem with notably few empirical attempts at comparing approaches in an objective way, despite a clear need for such to drive optimization forward.
+## Overview
 
-This project contains tools to benchmark various implementations of approximate nearest neighbor (ANN) search for selected metrics. We have pre-generated datasets (in HDF5 format) and prepared Docker containers for each algorithm, as well as a [test suite](https://github.com/erikbern/ann-benchmarks/actions) to verify function integrity.
+- **Custom dataset**: MoRe (Movies & Reviews) — movies and reviews with embeddings and filterable attributes.
+- **Tested algorithms**:
+  - **pgvector**: HNSW and IVFFlat
+  - **FAISS**: HNSW (`hnsw(faiss)`) and IVF (`faiss-ivf`)
+  - **Milvus**: HNSW (`milvus-hnsw`) and IVFFlat (`milvus-ivfflat`); also supports IVFSQ8, IVFPQ, SCANN (check `config.yml` for enabled indexes)
 
-Evaluated
-=========
+## Requirements
 
-* [Annoy](https://github.com/spotify/annoy) ![https://img.shields.io/github/stars/spotify/annoy?style=social](https://img.shields.io/github/stars/spotify/annoy?style=social)
-* [FLANN](http://www.cs.ubc.ca/research/flann/) ![https://img.shields.io/github/stars/flann-lib/flann?style=social](https://img.shields.io/github/stars/flann-lib/flann?style=social)
-* [scikit-learn](http://scikit-learn.org/stable/modules/neighbors.html): LSHForest, KDTree, BallTree
-* [Weaviate](https://github.com/weaviate/weaviate) ![https://img.shields.io/github/stars/weaviate/weaviate?style=social](https://img.shields.io/github/stars/weaviate/weaviate?style=social)
-* [PANNS](https://github.com/ryanrhymes/panns) ![https://img.shields.io/github/stars/ryanrhymes/panns?style=social](https://img.shields.io/github/stars/ryanrhymes/panns?style=social)
-* [NearPy](http://pixelogik.github.io/NearPy/) ![https://img.shields.io/github/stars/pixelogik/NearPy?style=social](https://img.shields.io/github/stars/pixelogik/NearPy?style=social)
-* [KGraph](https://github.com/aaalgo/kgraph) ![https://img.shields.io/github/stars/aaalgo/kgraph?style=social](https://img.shields.io/github/stars/aaalgo/kgraph?style=social)
-* [NMSLIB (Non-Metric Space Library)](https://github.com/nmslib/nmslib) ![https://img.shields.io/github/stars/nmslib/nmslib?style=social](https://img.shields.io/github/stars/nmslib/nmslib?style=social): SWGraph, HNSW, BallTree, MPLSH
-* [hnswlib (a part of nmslib project)](https://github.com/nmslib/hnsw) ![https://img.shields.io/github/stars/nmslib/hnsw?style=social](https://img.shields.io/github/stars/nmslib/hnsw?style=social)
-* [RPForest](https://github.com/lyst/rpforest) ![https://img.shields.io/github/stars/lyst/rpforest?style=social](https://img.shields.io/github/stars/lyst/rpforest?style=social)
-* [FAISS](https://github.com/facebookresearch/faiss) ![https://img.shields.io/github/stars/facebookresearch/faiss?style=social](https://img.shields.io/github/stars/facebookresearch/faiss?style=social)
-* [DolphinnPy](https://github.com/ipsarros/DolphinnPy) ![https://img.shields.io/github/stars/ipsarros/DolphinnPy?style=social](https://img.shields.io/github/stars/ipsarros/DolphinnPy?style=social)
-* [Datasketch](https://github.com/ekzhu/datasketch) ![https://img.shields.io/github/stars/ekzhu/datasketch?style=social](https://img.shields.io/github/stars/ekzhu/datasketch?style=social)
-* [nndescent](https://github.com/brj0/nndescent) ![https://img.shields.io/github/stars/brj0/nndescent?style=social](https://img.shields.io/github/stars/brj0/nndescent?style=social)
-* [PyNNDescent](https://github.com/lmcinnes/pynndescent) ![https://img.shields.io/github/stars/lmcinnes/pynndescent?style=social](https://img.shields.io/github/stars/lmcinnes/pynndescent?style=social)
-* [MRPT](https://github.com/teemupitkanen/mrpt) ![https://img.shields.io/github/stars/teemupitkanen/mrpt?style=social](https://img.shields.io/github/stars/teemupitkanen/mrpt?style=social)
-* [NGT](https://github.com/yahoojapan/NGT) ![https://img.shields.io/github/stars/yahoojapan/NGT?style=social](https://img.shields.io/github/stars/yahoojapan/NGT?style=social): ONNG, PANNG, QG
-* [SPTAG](https://github.com/microsoft/SPTAG) ![https://img.shields.io/github/stars/microsoft/SPTAG?style=social](https://img.shields.io/github/stars/microsoft/SPTAG?style=social)
-* [PUFFINN](https://github.com/puffinn/puffinn) ![https://img.shields.io/github/stars/puffinn/puffinn?style=social](https://img.shields.io/github/stars/puffinn/puffinn?style=social)
-* [N2](https://github.com/kakao/n2) ![https://img.shields.io/github/stars/kakao/n2?style=social](https://img.shields.io/github/stars/kakao/n2?style=social)
-* [ScaNN](https://github.com/google-research/google-research/tree/master/scann)
-* [Vearch](https://github.com/vearch/vearch) ![https://img.shields.io/github/stars/vearch/vearch?style=social](https://img.shields.io/github/stars/vearch/vearch?style=social)
-* [Elasticsearch](https://github.com/elastic/elasticsearch) ![https://img.shields.io/github/stars/elastic/elasticsearch?style=social](https://img.shields.io/github/stars/elastic/elasticsearch?style=social): HNSW
-* [Elastiknn](https://github.com/alexklibisz/elastiknn) ![https://img.shields.io/github/stars/alexklibisz/elastiknn?style=social](https://img.shields.io/github/stars/alexklibisz/elastiknn?style=social)
-* [ExpANN](https://github.com/jacketsj/expANN) ![https://img.shields.io/github/stars/jacketsj/expANN?style=social](https://img.shields.io/github/stars/jacketsj/expANN?style=social)
-* [OpenSearch KNN](https://github.com/opensearch-project/k-NN) ![https://img.shields.io/github/stars/opensearch-project/k-NN?style=social](https://img.shields.io/github/stars/opensearch-project/k-NN?style=social)
-* [DiskANN](https://github.com/microsoft/diskann) ![https://img.shields.io/github/stars/microsoft/diskann?style=social](https://img.shields.io/github/stars/microsoft/diskann?style=social): Vamana, Vamana-PQ
-* [Vespa](https://github.com/vespa-engine/vespa) ![https://img.shields.io/github/stars/vespa-engine/vespa?style=social](https://img.shields.io/github/stars/vespa-engine/vespa?style=social)
-* [scipy](https://docs.scipy.org/doc/scipy/reference/spatial.html): cKDTree
-* [vald](https://github.com/vdaas/vald) ![https://img.shields.io/github/stars/vdaas/vald?style=social](https://img.shields.io/github/stars/vdaas/vald?style=social)
-* [Qdrant](https://github.com/qdrant/qdrant) ![https://img.shields.io/github/stars/qdrant/qdrant?style=social](https://img.shields.io/github/stars/qdrant/qdrant?style=social)
-* [HUAWEI(qsgngt)](https://github.com/WPJiang/HWTL_SDU-ANNS.git)
-* [Milvus](https://github.com/milvus-io/milvus) ![https://img.shields.io/github/stars/milvus-io/milvus?style=social](https://img.shields.io/github/stars/milvus-io/milvus?style=social): [Knowhere](https://github.com/milvus-io/knowhere)
-* [Zilliz(Glass)](https://github.com/hhy3/pyglass)
-* [pgvector](https://github.com/pgvector/pgvector) ![https://img.shields.io/github/stars/pgvector/pgvector?style=social](https://img.shields.io/github/stars/pgvector/pgvector?style=social)
-* [pgvecto.rs](https://github.com/tensorchord/pgvecto.rs) ![https://img.shields.io/github/stars/tensorchord/pgvecto.rs?style=social](https://img.shields.io/github/stars/tensorchord/pgvecto.rs?style=social)
-* [RediSearch](https://github.com/redisearch/redisearch) ![https://img.shields.io/github/stars/redisearch/redisearch?style=social](https://img.shields.io/github/stars/redisearch/redisearch?style=social)
-  * [pg_embedding](https://github.com/neondatabase/pg_embedding) ![https://img.shields.io/github/stars/pg_embedding/pg_embedding?style=social](https://img.shields.io/github/stars/neondatabase/pg_embedding?style=social)
-* [Descartes(01AI)](https://github.com/xiaoming-01ai/descartes)
-* [kgn](https://github.com/Henry-yan/kgn)
-* [vsag](https://github.com/antgroup/vsag)
+- Python 3.8+
+- Docker
+- Conda (recommended for environment management)
 
-Data sets
-=========
+## Setup
 
-We have a number of precomputed data sets in HDF5 format. All data sets have been pre-split into train/test and include ground truth data for the top-100 nearest neighbors.
+### 1. Conda environment
 
-| Dataset                                                           | Dimensions | Train size | Test size | Neighbors | Distance  | Download                                                                   |
-| ----------------------------------------------------------------- | ---------: | ---------: | --------: | --------: | --------- | -------------------------------------------------------------------------- |
-| [DEEP1B](http://sites.skoltech.ru/compvision/noimi/)              |         96 |  9,990,000 |    10,000 |       100 | Angular   | [HDF5](http://ann-benchmarks.com/deep-image-96-angular.hdf5) (3.6GB)
-| [Fashion-MNIST](https://github.com/zalandoresearch/fashion-mnist) |        784 |     60,000 |    10,000 |       100 | Euclidean | [HDF5](http://ann-benchmarks.com/fashion-mnist-784-euclidean.hdf5) (217MB) |
-| [GIST](http://corpus-texmex.irisa.fr/)                            |        960 |  1,000,000 |     1,000 |       100 | Euclidean | [HDF5](http://ann-benchmarks.com/gist-960-euclidean.hdf5) (3.6GB)          |
-| [GloVe](http://nlp.stanford.edu/projects/glove/)                  |         25 |  1,183,514 |    10,000 |       100 | Angular   | [HDF5](http://ann-benchmarks.com/glove-25-angular.hdf5) (121MB)            |
-| GloVe                                                             |         50 |  1,183,514 |    10,000 |       100 | Angular   | [HDF5](http://ann-benchmarks.com/glove-50-angular.hdf5) (235MB)            |
-| GloVe                                                             |        100 |  1,183,514 |    10,000 |       100 | Angular   | [HDF5](http://ann-benchmarks.com/glove-100-angular.hdf5) (463MB)           |
-| GloVe                                                             |        200 |  1,183,514 |    10,000 |       100 | Angular   | [HDF5](http://ann-benchmarks.com/glove-200-angular.hdf5) (918MB)           |
-| [Kosarak](http://fimi.uantwerpen.be/data/)                        |      27,983 |     74,962 |       500 |       100 | Jaccard   | [HDF5](http://ann-benchmarks.com/kosarak-jaccard.hdf5) (33MB)             |
-| [MNIST](http://yann.lecun.com/exdb/mnist/)                        |        784 |     60,000 |    10,000 |       100 | Euclidean | [HDF5](http://ann-benchmarks.com/mnist-784-euclidean.hdf5) (217MB)         |
-| [MovieLens-10M](https://grouplens.org/datasets/movielens/10m/)  |      65,134 |     69,363 |       500 |       100 | Jaccard   | [HDF5](http://ann-benchmarks.com/movielens10m-jaccard.hdf5) (63MB)             |
-| [NYTimes](https://archive.ics.uci.edu/ml/datasets/bag+of+words)   |        256 |    290,000 |    10,000 |       100 | Angular   | [HDF5](http://ann-benchmarks.com/nytimes-256-angular.hdf5) (301MB)         |
-| [SIFT](http://corpus-texmex.irisa.fr/)                           |        128 |  1,000,000 |    10,000 |       100 | Euclidean | [HDF5](http://ann-benchmarks.com/sift-128-euclidean.hdf5) (501MB)          |
-| [Last.fm](https://github.com/erikbern/ann-benchmarks/pull/91)     |         65 |    292,385 |    50,000 |       100 | Angular   | [HDF5](http://ann-benchmarks.com/lastfm-64-dot.hdf5) (135MB)               |
-| [COCO-I2I](https://cocodataset.org/)                              |        512 |    113,287 |    10,000 |       100 | Angular   | [HDF5](https://github.com/fabiocarrara/str-encoders/releases/download/v0.1.3/coco-i2i-512-angular.hdf5) (136MB) |
-| [COCO-T2I](https://cocodataset.org/)                              |        512 |    113,287 |    10,000 |       100 | Angular   | [HDF5](https://github.com/fabiocarrara/str-encoders/releases/download/v0.1.3/coco-t2i-512-angular.hdf5) (136MB) |
+```bash
+conda create -n ann-hq python=3.10
+conda activate ann-hq
+pip install -r requirements.txt
+```
 
-Results
-=======
+### 2. Dataset
 
-These are all as of April 2023, running all benchmarks on a r6i.16xlarge machine on AWS with `--parallelism 31` and hyperthreading disabled. All benchmarks are single-CPU.
+The benchmark uses a custom dataset in HDF5 format under `data/datasets/`:
 
-glove-100-angular
------------------
+```
+data/datasets/MoRe_{size}/
+├── datasets/           # Train embeddings (movies, reviews)
+│   ├── movies_dataset_0.hdf5
+│   └── reviews_dataset_0.hdf5
+├── filters/            # Filter definitions and selectivities
+│   ├── movies_filters_0.hdf5
+│   └── reviews_filters_0.hdf5
+└── queries/            # Query workloads per filter
+    └── queries_flex_{type}_sim_0_{filter_id}.hdf5
+```
 
-![glove-100-angular](https://raw.github.com/erikbern/ann-benchmarks/master/results/glove-100-angular.png)
+Supported sizes: `small`, `medium`, `large`. To obtain the MoRe dataset, please contact [aabylay@gmail.com](mailto:aabylay@gmail.com).
 
-sift-128-euclidean
-------------------
+### 3. Docker images
 
-![glove-100-angular](https://raw.github.com/erikbern/ann-benchmarks/master/results/sift-128-euclidean.png)
+Build the required Docker images:
 
-fashion-mnist-784-euclidean
----------------------------
+- **Milvus**: `ann-benchmarks-milvus-seg16384` (default 16 GB segment size)
+- **pgvector**: `ann-benchmarks-pgvector`
+- **FAISS**: `custom-hnsw-faiss`
 
-![fashion-mnist-784-euclidean](https://raw.github.com/erikbern/ann-benchmarks/master/results/fashion-mnist-784-euclidean.png)
+Example (Milvus):
 
-nytimes-256-angular
--------------------
+```bash
+docker build -t ann-benchmarks-milvus-seg16384 ann_benchmarks/algorithms/milvus/
+```
 
-![nytimes-256-angular](https://raw.github.com/erikbern/ann-benchmarks/master/results/nytimes-256-angular.png)
+For the Milvus segment-size ablation study (optional):
 
-gist-960-euclidean
--------------------
+```bash
+./build_milvus_ablation.sh
+```
 
-![gist-960-euclidean](https://raw.github.com/erikbern/ann-benchmarks/master/results/gist-960-euclidean.png)
+This builds `ann-benchmarks-milvus-seg{512,1024,2048,4096,8192,16384}`.
 
-glove-25-angular
-----------------
+### 4. Milvus configuration
 
-![glove-25-angular](https://raw.github.com/erikbern/ann-benchmarks/master/results/glove-25-angular.png)
+For Milvus, `starter.py` writes `milvus_data/user.yaml` with segment settings. Ensure Docker can access the project directory (e.g., avoid snap Docker with a private `/tmp`).
 
-TODO: update plots on <http://ann-benchmarks.com>.
+---
 
-Install
-=======
+## Running benchmarks
 
-The only prerequisite is Python (tested with 3.10.6) and Docker.
+### Main runner
 
-1. Clone the repo.
-2. Run `pip install -r requirements.txt`.
-3. Run `python install.py` to build all the libraries inside Docker containers (this can take a while, like 10-30 minutes).
+Standard benchmark entry point:
 
-Running
-=======
+```bash
+python run.py --algorithm <ALGO> --dataset glove-100-angular --dataset_size <SIZE>
+```
 
-1. Run `python run.py` (this can take an extremely long time, potentially days)
-2. Run `python plot.py` or `python create_website.py` to plot results.
-3. Run `python data_export.py --out res.csv` to export all results into a csv file for additional post-processing.
+**Arguments:**
+- `--algorithm`: `milvus-hnsw`, `milvus-ivfflat`, `pgvector`, `pgvector_ivf`, `hnsw(faiss)`, `faiss-ivf`
+- `--dataset`: Dataset name (e.g. `glove-100-angular`)
+- `--dataset_size`: `small`, `medium`, or `large`
+- `--force`: Re-run even if results exist
+- `--parallelism`: Number of parallel workers (default: 1)
 
-You can customize the algorithms and datasets as follows:
+### Orchestrator: `starter.py`
 
-* Check that `ann_benchmarks/algorithms/{YOUR_IMPLEMENTATION}/config.yml` contains the parameter settings that you want to test
-* To run experiments on SIFT, invoke `python run.py --dataset glove-100-angular`. See `python run.py --help` for more information on possible settings. Note that experiments can take a long time. 
-* To process the results, either use `python plot.py --dataset glove-100-angular` or `python create_website.py`. An example call: `python create_website.py --plottype recall/time --latex --scatter --outputdir website/`. 
+`starter.py` runs multiple algorithms and dataset sizes and generates config via `make_yaml.py`:
 
-Including your algorithm
-========================
+```bash
+python starter.py [--dataset_size small|medium|large]
+```
 
-Add your algorithm in the folder `ann_benchmarks/algorithms/{YOUR_IMPLEMENTATION}/` by providing
+Edit the `algo` list and `dataset_size` loop in `starter.py` to choose which algorithms and sizes to run.
 
-- [ ] A small Python wrapper in `module.py`
-- [ ] A Dockerfile named `Dockerfile` 
-- [ ] A set of hyper-parameters in `config.yml`
-- [ ] A CI test run by adding your implementation to `.github/workflows/benchmarks.yml`
+### Single algorithm run
 
-Check the [available implementations](./ann_benchmarks/algorithms/) for inspiration.
+```bash
+python run.py --algorithm milvus-hnsw --dataset glove-100-angular --dataset_size small
+```
 
-Principles
-==========
+---
 
-* Everyone is welcome to submit pull requests with tweaks and changes to how each library is being used.
-* In particular: if you are the author of any of these libraries, and you think the benchmark can be improved, consider making the improvement and submitting a pull request.
-* This is meant to be an ongoing project and represent the current state.
-* Make everything easy to replicate, including installing and preparing the datasets.
-* Try many different values of parameters for each library and ignore the points that are not on the precision-performance frontier.
-* High-dimensional datasets with approximately 100-1000 dimensions. This is challenging but also realistic. Not more than 1000 dimensions because those problems should probably be solved by doing dimensionality reduction separately.
-* Single queries are used by default. ANN-Benchmarks enforces that only one CPU is saturated during experimentation, i.e., no multi-threading. A batch mode is available that provides all queries to the implementations at once. Add the flag `--batch` to `run.py` and `plot.py` to enable batch mode. 
-* Avoid extremely costly index building (more than several hours).
-* Focus on datasets that fit in RAM. For billion-scale benchmarks, see the related [big-ann-benchmarks](https://github.com/harsha-simhadri/big-ann-benchmarks) project.
-* We mainly support CPU-based ANN algorithms. GPU support exists for FAISS, but it has to be compiled with GPU support locally and experiments must be run using the flags `--local --batch`. 
-* Do proper train/test set of index data and query points.
-* Note that we consider that set similarity datasets are sparse and thus we pass a **sorted** array of integers to algorithms to represent the set of each user.
+## Ablation study (Milvus segment size)
 
+The ablation workflow tests how Milvus segment size (512 MB–16 GB) affects performance.
 
-Authors
-=======
+**Scripts (dedicated ablation workflow):**
+- `starter_ablation.py`: Runs ablation across segment sizes and algorithms
+- `run_ablation.py`: Entry point using `main_ablation.py`
+- `make_yaml_ablation.py`: Generates config with segment-size-specific Docker tags
+- `ann_benchmarks/main_ablation.py`, `runner_ablation.py`, `results_ablation.py`: Core logic with segment size support
 
-Built by [Erik Bernhardsson](https://erikbern.com) with significant contributions from [Martin Aumüller](http://itu.dk/people/maau/) and [Alexander Faithfull](https://github.com/ale-f).
+**Run ablation:**
 
-Related Publication
-==================
+```bash
+# Full ablation (all segment sizes, default algorithms)
+python starter_ablation.py --dataset_size small
 
-Design principles behind the benchmarking framework are described in the following publications: 
+# Custom segment sizes
+python starter_ablation.py --dataset_size medium --segment_sizes 1024 4096 16384
 
-- M. Aumüller, E. Bernhardsson, A. Faithfull:
-[ANN-Benchmarks: A Benchmarking Tool for Approximate Nearest Neighbor Algorithms](https://arxiv.org/abs/1807.05614). Information Systems 2019. DOI: [10.1016/j.is.2019.02.006](https://doi.org/10.1016/j.is.2019.02.006)
--   M. Aumüller, E. Bernhardsson, A. Faithfull: [Reproducibility protocol for ANN-Benchmarks: A benchmarking tool for approximate nearest neighbor search algorithms](https://itu.dk/people/maau/additional/2022-ann-benchmarks-reproducibility.pdf), [Artifacts](https://doi.org/10.5281/zenodo.4607761).
+# Single segment size via run_ablation
+python run_ablation.py --algorithm milvus-hnsw --dataset glove-100-angular --dataset_size small --segment_size 1024
+```
 
-Related Projects
-================
+**Results layout:** `results/ablation_seg{size}/MoRe_UPD_{size}_attidx_0/...`
 
-- [big-ann-benchmarks](https://github.com/harsha-simhadri/big-ann-benchmarks) is a benchmarking effort for billion-scale approximate nearest neighbor search as part of the [NeurIPS'21 Competition track](https://neurips.cc/Conferences/2021/CompetitionTrack).
+---
 
+## Plotting and analysis
+
+Analysis scripts live in `analysis/`. Run them after generating benchmark results.
+
+### 1. Build CSV from HDF5 results
+
+```bash
+cd analysis
+python make_results.py
+```
+
+Useful options (check `--help`):
+- Paths and dataset size
+- Output CSV location
+
+The output CSV is used by plotting scripts.
+
+### 2. Plotting scripts
+
+All plotting scripts expect CSVs under `results/` (or configurable paths).
+
+| Script | Description |
+|--------|-------------|
+| `make_plots.py` | Basic throughput vs recall, recall vs selectivity |
+| `make_plots_results1.py` | Throughput vs recall by selectivity (for paper) |
+| `make_plots_results1_ivf.py` | Same, for IVF algorithms |
+| `make_plots_results_ALL.py` | Combined plots for all dataset sizes |
+| `make_plots_hnsw_vs_ivf_comparison.py` | HNSW vs IVF comparison |
+| `make_plots_ablation_seg16gb.py` | Ablation: 1 GB vs 16 GB segment size |
+| `make_plots_attidx_comparison.py` | Attribute index comparison |
+| `make_plots_build_times.py` | Index build time plots |
+
+**Example:**
+
+```bash
+cd analysis
+python make_plots_results1.py
+python make_plots_ablation_seg16gb.py  # After ablation runs
+```
+
+Some scripts hardcode paths (e.g. `ROOT_RESULTS`, `root_results`, `root_data`). Edit these at the top of each script if your repository path differs.
+
+---
+
+## Project layout
+
+```
+ann-benchmarks-HQ/
+├── ann_benchmarks/
+│   ├── algorithms/       # Algorithm implementations (faiss, faiss_hnsw, milvus, pgvector, pgvector_ivf)
+│   ├── main.py           # Main benchmark entry
+│   ├── main_ablation.py  # Ablation entry (segment size)
+│   ├── runner.py         # Run logic
+│   ├── runner_ablation.py
+│   ├── results.py       # Result storage
+│   ├── results_ablation.py  # Ablation result paths
+│   ├── datasets.py      # Dataset loading (MoRe)
+│   └── definitions.py
+├── analysis/            # Plotting and analysis scripts
+├── data/
+│   └── datasets/        # MoRe dataset (MoRe_small, MoRe_medium, MoRe_large)
+├── make_yaml.py         # Config generator for main runs
+├── make_yaml_ablation.py
+├── run.py               # Main entry: python run.py ...
+├── run_ablation.py      # Ablation entry
+├── starter.py           # Orchestrator for main runs
+├── starter_ablation.py   # Orchestrator for ablation
+└── requirements.txt
+```
+
+---
+
+## Tested algorithms summary
+
+| Backend | Algorithm | Config / notes |
+|---------|-----------|----------------|
+| **pgvector** | HNSW | `ann_benchmarks/algorithms/pgvector/config.yml` |
+| **pgvector** | IVFFlat | `ann_benchmarks/algorithms/pgvector_ivf/config.yml` |
+| **FAISS** | HNSW | `ann_benchmarks/algorithms/faiss_hnsw/config.yml` |
+| **FAISS** | IVF | `ann_benchmarks/algorithms/faiss/config.yml` |
+| **Milvus** | HNSW | `ann_benchmarks/algorithms/milvus/config.yml` |
+| **Milvus** | IVFFlat | Same config |
+| **Milvus** | IVFSQ8, IVFPQ, SCANN | Check config for enabled/disabled |
+
+---
+
+## License
+
+See the original [ann-benchmarks](https://github.com/erikbern/ann-benchmarks) license. Milvus components may have additional Apache-2.0 terms.

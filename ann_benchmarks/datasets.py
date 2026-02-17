@@ -85,6 +85,52 @@ def get_dataset(dataset_name: str, k, filter) -> Tuple[h5py.File, int]:
     return hdf5_file, dimension
 
 
+# --- NEW CODE: START ---------------------------------------------------------------------------------
+
+# Function to get the training dataset from an HDF5 file.
+def get_train_dataset(dataset_type: str, dataset_size: str) -> Tuple[h5py.File, int]:
+    """
+    Loads the training dataset from an HDF5 file.
+    
+    Args:
+        dataset_name (str): The name of the dataset.
+    
+    Returns:
+        Tuple[numpy.ndarray, numpy.ndarray, numpy.ndarray]: A tuple containing the 
+            training IDs, training data, and training attributes.
+    """
+
+    hdf5_filename = f"data/datasets/MoRe_{dataset_size}/datasets/{dataset_type}_dataset_0.hdf5"
+    print("Reading dataset with name:", hdf5_filename)
+    hdf5_file = h5py.File(hdf5_filename, "r")
+    
+    if "dimension" in hdf5_file.attrs: dimension = int(hdf5_file.attrs["dimension"])
+    elif "train_storyline_vec" in hdf5_file:
+        dimension = len(hdf5_file["train_storyline_vec"][0])
+    elif "train_review_vec" in hdf5_file:
+        dimension = len(hdf5_file["train_review_vec"][0])
+    return hdf5_file, dimension
+
+
+# Function to get the filters for a specific dataset type from an HDF5 file.
+def get_filters(dataset_type: str, dataset_size: str) -> h5py.File:
+    """Loads the filters for a specific dataset type from an HDF5 file."""
+    hdf5_filename = f"data/datasets/MoRe_{dataset_size}/filters/{dataset_type}_filters_0.hdf5"
+    hdf5_file = h5py.File(hdf5_filename, "r")
+    return hdf5_file
+
+
+# Function to get a workload dataset from an HDF5 file.
+def get_workload_dataset(dataset_type: str, filter_id: str, dataset_size: str) -> Tuple[numpy.ndarray, str]:
+    """Loads a workload dataset from an HDF5 file based on the dataset type and filter ID."""
+    hdf5_filename = f"data/datasets/MoRe_{dataset_size}/queries/queries_flex_{dataset_type}_sim_0_{filter_id}.hdf5"
+    print("Reading workload dataset with name:", hdf5_filename)
+    hdf5_file = h5py.File(hdf5_filename, "r")
+    return hdf5_file
+
+# --- NEW CODE: END ---------------------------------------------------------------------------------
+
+
 def write_output(train: numpy.ndarray, test: numpy.ndarray, fn: str, distance: str, point_type: str = "float", count: int = 100) -> None:
     """
     Writes the provided training and testing data to an HDF5 file. It also computes 
