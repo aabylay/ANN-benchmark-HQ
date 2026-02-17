@@ -1,4 +1,4 @@
-# ANN-Benchmarks HQ — Filtered Approximate Nearest Neighbor Search
+# ANN-Benchmarks Extension for Filtered Vector Search
 
 This repository extends [ann-benchmarks](https://github.com/erikbern/ann-benchmarks) for **Filtered ANNS** queries. Benchmarks evaluate recall, query latency, and throughput under varying filter selectivity.
 
