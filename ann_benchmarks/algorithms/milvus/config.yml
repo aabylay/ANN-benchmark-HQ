@@ -5,7 +5,7 @@ float:
     - '@dimension'
     constructor: MilvusFLAT
     disabled: false
-    docker_tag: ann-benchmarks-milvus-seg16384
+    docker_tag: ann-benchmarks-milvus
     module: ann_benchmarks.algorithms.milvus
     name: milvus-flat
     run_groups:
@@ -18,27 +18,21 @@ float:
     - '@dimension'
     constructor: MilvusIVFFLAT
     disabled: false
-    docker_tag: ann-benchmarks-milvus-seg16384
+    docker_tag: ann-benchmarks-milvus
     module: ann_benchmarks.algorithms.milvus
     name: milvus-ivfflat
     run_groups:
       IVFFLAT:
         args:
-          nlist:
-          - 750
-          - 1600
+          nlist: null
         query_args:
-        - - 1
-          - 5
-          - 10
-          - 50
-          - 300
+        - null
   - base_args:
     - '@metric'
     - '@dimension'
     constructor: MilvusIVFSQ8
     disabled: false
-    docker_tag: ann-benchmarks-milvus-seg16384
+    docker_tag: ann-benchmarks-milvus
     module: ann_benchmarks.algorithms.milvus
     name: milvus-ivfsq8
     run_groups:
@@ -62,7 +56,7 @@ float:
     - '@dimension'
     constructor: MilvusIVFPQ
     disabled: false
-    docker_tag: ann-benchmarks-milvus-seg16384
+    docker_tag: ann-benchmarks-milvus
     module: ann_benchmarks.algorithms.milvus
     name: milvus-ivfpq
     run_groups:
@@ -89,24 +83,27 @@ float:
     - '@dimension'
     constructor: MilvusHNSW
     disabled: false
-    docker_tag: ann-benchmarks-milvus-seg16384
+    docker_tag: ann-benchmarks-milvus
     module: ann_benchmarks.algorithms.milvus
     name: milvus-hnsw
     run_groups:
       HNSW:
         args:
           M:
-          - 0
+          - 5
           efConstruction:
-          - null
+          - 25
         query_args:
-        - null
+        - - 100
+          - 200
+          - 500
+          - 1000
   - base_args:
     - '@metric'
     - '@dimension'
     constructor: MilvusSCANN
     disabled: false
-    docker_tag: ann-benchmarks-milvus-seg16384
+    docker_tag: ann-benchmarks-milvus
     module: ann_benchmarks.algorithms.milvus
     name: milvus-scann
     run_groups:

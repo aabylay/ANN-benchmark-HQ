@@ -32,7 +32,10 @@ libknowhere.so
 libmilvus_core.so
 
 results/*
-!results/*.png
+results_prev/*
+scripts/*
+
+# !results/*.png
 
 venv
 .venv

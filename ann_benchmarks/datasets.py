@@ -105,10 +105,10 @@ def get_train_dataset(dataset_type: str, dataset_size: str) -> Tuple[h5py.File, 
     hdf5_file = h5py.File(hdf5_filename, "r")
     
     if "dimension" in hdf5_file.attrs: dimension = int(hdf5_file.attrs["dimension"])
-    elif "train_storyline_vec" in hdf5_file:
-        dimension = len(hdf5_file["train_storyline_vec"][0])
-    elif "train_review_vec" in hdf5_file:
-        dimension = len(hdf5_file["train_review_vec"][0])
+    elif "train_mvector" in hdf5_file:
+        dimension = len(hdf5_file["train_mvector"][0])
+    elif "train_rvector" in hdf5_file:
+        dimension = len(hdf5_file["train_rvector"][0])
     return hdf5_file, dimension
 
 

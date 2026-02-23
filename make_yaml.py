@@ -24,7 +24,7 @@ def make_yaml(algo, m=None, ef_c=None, ef_s_list=None, ivf_algo=False, dataset_s
                         "base_args": ["@metric", "@dimension"],
                         "constructor": "MilvusFLAT",
                         "disabled": False,
-                        "docker_tag": "ann-benchmarks-milvus-seg16384",
+                        "docker_tag": "ann-benchmarks-milvus",
                         "module": "ann_benchmarks.algorithms.milvus",
                         "name": "milvus-flat",
                         "run_groups": {
@@ -37,7 +37,7 @@ def make_yaml(algo, m=None, ef_c=None, ef_s_list=None, ivf_algo=False, dataset_s
                         "base_args": ["@metric", "@dimension"],
                         "constructor": "MilvusIVFFLAT",
                         "disabled": False,
-                        "docker_tag": "ann-benchmarks-milvus-seg16384",
+                        "docker_tag": "ann-benchmarks-milvus",
                         "module": "ann_benchmarks.algorithms.milvus",
                         "name": "milvus-ivfflat",
                         "run_groups": {
@@ -51,7 +51,7 @@ def make_yaml(algo, m=None, ef_c=None, ef_s_list=None, ivf_algo=False, dataset_s
                         "base_args": ["@metric", "@dimension"],
                         "constructor": "MilvusIVFSQ8",
                         "disabled": False,
-                        "docker_tag": "ann-benchmarks-milvus-seg16384",
+                        "docker_tag": "ann-benchmarks-milvus",
                         "module": "ann_benchmarks.algorithms.milvus",
                         "name": "milvus-ivfsq8",
                         "run_groups": {
@@ -65,7 +65,7 @@ def make_yaml(algo, m=None, ef_c=None, ef_s_list=None, ivf_algo=False, dataset_s
                         "base_args": ["@metric", "@dimension"],
                         "constructor": "MilvusIVFPQ",
                         "disabled": False,
-                        "docker_tag": "ann-benchmarks-milvus-seg16384",
+                        "docker_tag": "ann-benchmarks-milvus",
                         "module": "ann_benchmarks.algorithms.milvus",
                         "name": "milvus-ivfpq",
                         "run_groups": {
@@ -82,7 +82,7 @@ def make_yaml(algo, m=None, ef_c=None, ef_s_list=None, ivf_algo=False, dataset_s
                         "base_args": ["@metric", "@dimension"],
                         "constructor": "MilvusHNSW",
                         "disabled": False,
-                        "docker_tag": "ann-benchmarks-milvus-seg16384",
+                        "docker_tag": "ann-benchmarks-milvus",
                         "module": "ann_benchmarks.algorithms.milvus",
                         "name": "milvus-hnsw",
                         "run_groups": {
@@ -99,7 +99,7 @@ def make_yaml(algo, m=None, ef_c=None, ef_s_list=None, ivf_algo=False, dataset_s
                         "base_args": ["@metric", "@dimension"],
                         "constructor": "MilvusSCANN",
                         "disabled": False,
-                        "docker_tag": "ann-benchmarks-milvus-seg16384",
+                        "docker_tag": "ann-benchmarks-milvus",
                         "module": "ann_benchmarks.algorithms.milvus",
                         "name": "milvus-scann",
                         "run_groups": {

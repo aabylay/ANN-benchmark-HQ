@@ -8,10 +8,10 @@ float:
     module: ann_benchmarks.algorithms.faiss_hnsw
     name: hnsw(faiss)
     run_groups:
-      M-15:
+      M-5:
         arg_groups:
-        - M: 15
-          efConstruction: 75
+        - M: 5
+          efConstruction: 25
         args: {}
         query_args:
         - - 100

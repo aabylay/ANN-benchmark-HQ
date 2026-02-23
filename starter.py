@@ -45,7 +45,7 @@ if __name__ == "__main__":
     write_milvus_user_yaml(segment_size_mb=16384)
 
     # TODO: NEW ONE TO BE IMPLEMENTED "hnsw_cagra(faiss)"    
-    for dataset_size in ["large", "small", "medium"]: # "small", "medium", "large"
+    for dataset_size in ["small", "medium"]: # "small", "medium", "large"
         print(f"\n\n=======================================CHECKING DATASET SIZE {dataset_size}=======================================\n\n", flush=True)
 
         """ Available algorithms list: 
@@ -53,7 +53,7 @@ if __name__ == "__main__":
             ["milvus-ivfflat", "pgvector_ivf", "faiss-ivf"]
         """
         
-        for algo in ["milvus-ivfflat"]: # "pgvector_ivf", "milvus-ivfflat", "faiss-ivf", "milvus-hnsw", "pgvector", "hnsw(faiss)"
+        for algo in [ "pgvector_ivf", "milvus-ivfflat", "faiss-ivf", "milvus-hnsw", "pgvector", "hnsw(faiss)"]: # "pgvector_ivf", "milvus-ivfflat", "faiss-ivf", "milvus-hnsw", "pgvector", "hnsw(faiss)"
             print(f"----------------------------------------\nRunning experiments for algorithm: {algo}", flush=True)            
             if algo in ["milvus-hnsw", "pgvector", "hnsw(faiss)"]:
                 for m in [5]: # [5, 10, 15]

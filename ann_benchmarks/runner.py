@@ -239,21 +239,21 @@ def load_train_dataset(dataset_type: str, dataset_size: str) -> Tuple[
     D, dimension = get_train_dataset(dataset_type, dataset_size)
 
     if dataset_type == "movies":
-        train_vecs = numpy.array(D["train_storyline_vec"])
-        train_ids = numpy.array(D["train_title_id"])
-        train_attr1 = numpy.array(D["train_avgRating"])
-        train_attr2 = numpy.array(D["train_is_adult"])
+        train_vecs = numpy.array(D["train_mvector"])
+        train_ids = numpy.array(D["train_mid"])
+        train_attr1 = numpy.array(D["train_avgrating"])
+        train_attr2 = numpy.array(D["train_title"])
         train_attr3 = numpy.array(D["train_genre"])
         train_attr4 = numpy.array(D["train_num_votes"])
-        train_attr5 = numpy.array(D["train_start_year"])
+        train_attr5 = numpy.array(D["train_year"])
     elif dataset_type == "reviews":
-        train_vecs = numpy.array(D["train_review_vec"])
-        train_ids = numpy.array(D["train_review_ids"])
-        train_attr1 = numpy.array(D["train_title_ids"])
-        train_attr2 = numpy.array(D["train_user_ids"])
-        train_attr3 = numpy.array(D["train_up_votes"])
-        train_attr4 = numpy.array(D["train_down_votes"])    
-        train_attr5 = numpy.array(D["train_total_votes"])
+        train_vecs = numpy.array(D["train_rvector"])
+        train_ids = numpy.array(D["train_rid"])
+        train_attr1 = numpy.array(D["train_mid"])
+        train_attr2 = numpy.array(D["train_uid"])
+        train_attr3 = numpy.array(D["train_likeshare"])
+        train_attr4 = numpy.array(D["train_movierating"])    
+        train_attr5 = numpy.array(D["train_total_votes"]) 
 
     train_attrs = numpy.array([train_attr1, train_attr2, train_attr3, train_attr4, train_attr5])
     print(f"Got a train set with ***{dataset_type}*** of size: ({train_vecs.shape[0]} * {dimension})")
@@ -297,8 +297,8 @@ def load_filters(dataset_type: str, dataset_size: str) -> Tuple[List[int], List[
     return filter_ids, filters
 
 
-# Function to compile a filter string into a list of selection parts.
-def compile_filter(filter: str) -> List[str]:
+# Function to parse a filter string into a list of selection parts.
+def parse_filter(filter: str) -> List[str]:
     # remove all whitespace from the filter string
     print(f"Compiling filter: {filter}")
     if filter == ["No_filter"]: return filter
@@ -309,25 +309,25 @@ def compile_filter(filter: str) -> List[str]:
     # operators include '=', '!=', '<', '>', '<=', '>='
     if '<=' in filter:
         attr, value = filter.split('<=')
-        compiled_filter = [attr.strip(), '<=', value.strip()]
+        parsed_filter = [attr.strip(), '<=', value.strip()]
     elif '>=' in filter:
         attr, value = filter.split('>=')
-        compiled_filter = [attr.strip(), '>=', value.strip()]
+        parsed_filter = [attr.strip(), '>=', value.strip()]
     elif '!=' in filter:
         attr, value = filter.split('!=')
-        compiled_filter = [attr.strip(), '!=', value.strip()]    
+        parsed_filter = [attr.strip(), '!=', value.strip()]    
     elif "=" in filter:
         attr, value = filter.split("=")
-        compiled_filter = [attr.strip(), '=', value.strip()]
+        parsed_filter = [attr.strip(), '=', value.strip()]
     elif '<' in filter:
         attr, value = filter.split('<')
-        compiled_filter = [attr.strip(), '<', value.strip()]
+        parsed_filter = [attr.strip(), '<', value.strip()]
     elif '>' in filter:
         attr, value = filter.split('>')
-        compiled_filter = [attr.strip(), '>', value.strip()]
+        parsed_filter = [attr.strip(), '>', value.strip()]
     else:
         raise ValueError(f"Unknown filter format: {filter}")
-    return compiled_filter
+    return parsed_filter
 
 # --- NEW CODE: END ---------------------------------------------------------------------------------
 
@@ -417,7 +417,7 @@ function"""
                 for fid, ff in zip(filter_ids, filters):
                     kk_values = [10]
                     X_test, distance = load_workload_dataset(dataset_type, fid, dataset_size)
-                    ff = compile_filter(ff)
+                    ff = parse_filter(ff)
                     print(f"Running with filter: {ff}")
                     # if ff == ['No_filter']:
                     #    print("Skipping filter for No_filter")
@@ -495,7 +495,7 @@ function"""
                 for fid, ff in zip(filter_ids, filters):
                     kk_values = [10, 40, 100, 1]
                     X_test, distance = load_workload_dataset(dataset_type, fid, dataset_size)
-                    ff = compile_filter(ff)
+                    ff = parse_filter(ff)
                     print(f"Running with filter: {ff}")
                     # kk = 1
                     # if ff == ['No_filter']:
@@ -546,7 +546,7 @@ function"""
                                     "dataset": dataset_name
                                 })
 
-                                store_results(dataset_name, kk, definition, query_arguments, descriptor, results, batch, fid, dataset_size, dataset_type, att_idx, segment_size)
+                                store_results(dataset_name, kk, definition, query_arguments, descriptor, results, batch, fid, dataset_size, dataset_type, att_idx)
                                 
                     
         finally: # making sure that milvus finished and didn't crash

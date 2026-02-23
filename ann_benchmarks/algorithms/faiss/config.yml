@@ -11,11 +11,11 @@ float:
       base:
         args:
           clusters:
-          - 100
-          - 500
+          - 300
+          - 1200
         query_args:
         - - 1
           - 5
           - 10
-          - 20
           - 50
+          - 150

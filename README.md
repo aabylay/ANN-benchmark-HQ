@@ -74,20 +74,9 @@ For Milvus, `starter.py` writes `milvus_data/user.yaml` with segment settings. E
 
 ## Running benchmarks
 
-### Main runner
-
-Standard benchmark entry point:
-
-```bash
-python run.py --algorithm <ALGO> --dataset glove-100-angular --dataset_size <SIZE>
-```
-
 **Arguments:**
 - `--algorithm`: `milvus-hnsw`, `milvus-ivfflat`, `pgvector`, `pgvector_ivf`, `hnsw(faiss)`, `faiss-ivf`
-- `--dataset`: Dataset name (e.g. `glove-100-angular`)
 - `--dataset_size`: `small`, `medium`, or `large`
-- `--force`: Re-run even if results exist
-- `--parallelism`: Number of parallel workers (default: 1)
 
 ### Orchestrator: `starter.py`
 
@@ -98,12 +87,6 @@ python starter.py [--dataset_size small|medium|large]
 ```
 
 Edit the `algo` list and `dataset_size` loop in `starter.py` to choose which algorithms and sizes to run.
-
-### Single algorithm run
-
-```bash
-python run.py --algorithm milvus-hnsw --dataset glove-100-angular --dataset_size small
-```
 
 ---
 
@@ -118,21 +101,6 @@ The ablation workflow tests how Milvus segment size (512 MB–16 GB) affects per
 - `ann_benchmarks/main_ablation.py`, `runner_ablation.py`, `results_ablation.py`: Core logic with segment size support
 
 NOTE: It is possible to run ablation with run.py. Pls carefully review the code before doing so.
-
-**Run ablation:**
-
-```bash
-# Full ablation (all segment sizes, default algorithms)
-python starter_ablation.py --dataset_size small
-
-# Custom segment sizes
-python starter_ablation.py --dataset_size medium --segment_sizes 1024 4096 16384
-
-# Single segment size via run_ablation
-python run_ablation.py --algorithm milvus-hnsw --dataset glove-100-angular --dataset_size small --segment_size 1024
-```
-
-**Results layout:** `results/ablation_seg{size}/MoRe_UPD_{size}_attidx_0/...`
 
 ---
 
@@ -184,22 +152,22 @@ ann-benchmarks-HQ/
 ├── ann_benchmarks/
 │   ├── algorithms/       # Algorithm implementations (faiss, faiss_hnsw, milvus, pgvector, pgvector_ivf)
 │   ├── main.py           # Main benchmark entry
-│   ├── main_ablation.py  # Ablation entry (segment size)
+│   ├── main_ablation.py  # Ablation entry (segment size) (to be merged with main.py)
 │   ├── runner.py         # Run logic
-│   ├── runner_ablation.py
+│   ├── runner_ablation.py # To be merged with runner.py
 │   ├── results.py       # Result storage
-│   ├── results_ablation.py  # Ablation result paths
+│   ├── results_ablation.py  # Ablation result paths (To be merged results_ablation.py)
 │   ├── datasets.py      # Dataset loading (MoRe)
 │   └── definitions.py
 ├── analysis/            # Plotting and analysis scripts
 ├── data/
 │   └── datasets/        # MoRe dataset (MoRe_small, MoRe_medium, MoRe_large)
 ├── make_yaml.py         # Config generator for main runs
-├── make_yaml_ablation.py
+├── make_yaml_ablation.py # To be merged with make_yaml.py
 ├── run.py               # Main entry: python run.py ...
-├── run_ablation.py      # Ablation entry
+├── run_ablation.py      # Ablation entry (to be merged with run.py)
 ├── starter.py           # Orchestrator for main runs
-├── starter_ablation.py   # Orchestrator for ablation
+├── starter_ablation.py   # Orchestrator for ablation (to be merged with starter.py)
 └── requirements.txt
 ```
 
