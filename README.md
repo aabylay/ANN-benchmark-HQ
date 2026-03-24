@@ -28,7 +28,7 @@ pip install -r requirements.txt
 
 ### 2. Dataset
 
-The benchmark uses a custom dataset in HDF5 format under `data/datasets/`:
+The benchmark uses MoReVec datasets in HDF5 format under `data/datasets/`:
 
 ```
 data/datasets/MoRe_{size}/
@@ -42,7 +42,15 @@ data/datasets/MoRe_{size}/
     └── queries_flex_{type}_sim_0_{filter_id}.hdf5
 ```
 
-Supported sizes: `small`, `medium`, `large`. To obtain the MoRe dataset, please contact [aabylay@gmail.com](mailto:aabylay@gmail.com).
+Supported sizes: `small`, `medium`, `large`.
+
+MoReVec datasets is in this link: [Google Drive folder](https://drive.google.com/drive/folders/1AqAVI8ASROqrFCQdEMPB8RNzPwilijRp?usp=drive_link)
+
+Or run the `load_morevec` script:
+
+```bash
+python load_morevec.py
+```
 
 ### 3. Docker images
 
