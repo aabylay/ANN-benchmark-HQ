@@ -750,9 +750,9 @@ def generate_plots(df: pd.DataFrame, output_dir: str, high_thresh: float = 0.3, 
                 for s in systems
             )
             legend_handles.append(handles)
-            if level == 'high': legend_label = f'{idx_type}, High GLS Correlation: $\\rho_q > 0.3$'
-            elif level == 'average': legend_label = f'{idx_type}, Average GLS Correlation: $\\rho_q \\in [-0.3, 0.3]$'
-            elif level == 'low': legend_label = f'{idx_type}, Low GLS Correlation: $\\rho_q < -0.3$'
+            if level == 'high': legend_label = f'{idx_type}, Positive GLS correlation'
+            elif level == 'average': legend_label = f'{idx_type}, Neutral GLS correlation'
+            elif level == 'low': legend_label = f'{idx_type}, Negative GLS correlation'
             legend_labels.append(legend_label)
     
     fig3.legend(legend_handles, legend_labels,
