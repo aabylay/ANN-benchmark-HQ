@@ -2,15 +2,18 @@ import yaml
 
 def make_yaml(algo, m=None, ef_c=None, ef_s_list=None, ivf_algo=False, dataset_size=None):
     if ivf_algo:
+        # Construction param is FIXED at ~sqrt(|D|), computed per table inside
+        # the algorithm's fit() (clusters=0 is the sentinel that requests this).
+        # Only the search param (probes) is swept here.
+        clusters = [0]
         if dataset_size == 'small':
-            clusters = [100, 500]
             probes = [1, 5, 10, 20, 50]
         elif dataset_size == 'medium':
-            clusters = [300, 1200]
             probes = [1, 5, 10, 50, 150]
         elif dataset_size == 'large':
-            clusters = [750,1600]
-            probes = [1, 5, 10, 50, 300]
+            probes = [5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+        else:
+            probes = [5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
     else:
         clusters = None
         probes = None
@@ -208,6 +211,55 @@ def make_yaml(algo, m=None, ef_c=None, ef_s_list=None, ivf_algo=False, dataset_s
                 ]
             }
         }
-    
+
+    elif algo == "faiss-flat":
+        # FAISS brute-force (exact) with bitset pre-filtering. No construction
+        # or search params to sweep -> a single placeholder query arg group.
+        output_path = f"ann_benchmarks/algorithms/faiss_flat/config.yml"
+        data = {
+            "float": {
+                "any": [
+                    {
+                        "base_args": ["@metric"],
+                        "constructor": "FaissFlat",
+                        "disabled": False,
+                        "docker_tag": "custom-hnsw-faiss",
+                        "module": "ann_benchmarks.algorithms.faiss",
+                        "name": "faiss-flat",
+                        "run_groups": {
+                            "base": {
+                                "args": [],
+                                "query_args": [[0]]
+                            }
+                        }
+                    }
+                ]
+            }
+        }
+
+    elif algo == "pgvector_bf":
+        # PG-Vector brute-force (exact, no index) with SQL WHERE post-filtering.
+        output_path = f"ann_benchmarks/algorithms/pgvector_bf/config.yml"
+        data = {
+            "float": {
+                "any": [
+                    {
+                        "base_args": ["@metric"],
+                        "constructor": "PGVector",
+                        "disabled": False,
+                        "docker_tag": "ann-benchmarks-pgvector",
+                        "module": "ann_benchmarks.algorithms.pgvector_bf",
+                        "name": "pgvector_bf",
+                        "run_groups": {
+                            "base": {
+                                "args": [],
+                                "query_args": [[0]]
+                            }
+                        }
+                    }
+                ]
+            }
+        }
+
     with open(output_path, 'w') as f:
         yaml.dump(data, f, sort_keys=False)

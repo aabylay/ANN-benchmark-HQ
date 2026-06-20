@@ -493,7 +493,8 @@ function"""
             for att_idx in [0]: # [0 - for no attr idx, | 1 - for attr idx]
                 if att_idx: algo.fit_idx(dataset_type)
                 for fid, ff in zip(filter_ids, filters):
-                    kk_values = [10, 40, 100, 1]
+                    # k is FIXED for the FANNS sweep (only search params are swept).
+                    kk_values = [10]
                     X_test, distance = load_workload_dataset(dataset_type, fid, dataset_size)
                     ff = parse_filter(ff)
                     print(f"Running with filter: {ff}")
@@ -521,7 +522,7 @@ function"""
                             if query_arguments:
                                 algo.set_query_arguments(*query_arguments)
                                 
-                                if definition.algorithm in ["faiss-ivf", "hnsw(faiss)"] and ff != ["No_filter"]:
+                                if definition.algorithm in ["faiss-ivf", "hnsw(faiss)", "faiss-flat"] and ff != ["No_filter"]:
                                     # Select the correct attribute array that matches what was used in build_index
                                     if dataset_type == "movies":
                                         X_attr = X_attrs[0]

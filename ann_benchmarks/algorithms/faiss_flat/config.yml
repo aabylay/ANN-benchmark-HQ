@@ -2,19 +2,13 @@ float:
   any:
   - base_args:
     - '@metric'
-    constructor: FaissIVF
+    constructor: FaissFlat
     disabled: false
     docker_tag: custom-hnsw-faiss
     module: ann_benchmarks.algorithms.faiss
-    name: faiss-ivf
+    name: faiss-flat
     run_groups:
       base:
-        args:
-          clusters:
-          - 0
+        args: []
         query_args:
-        - - 1
-          - 5
-          - 10
-          - 50
-          - 300
+        - - 0

@@ -71,13 +71,23 @@ class FaissIVF(Faiss):
     def __init__(self, metric, n_list):
         self._n_list = n_list
         self._metric = metric
+        # Actual number of clusters used to build the index. When the configured
+        # value is <= 0 it is auto-derived per table as round(sqrt(|D|)) in fit().
+        self._nlist = None
 
     def fit(self, X_ids, X, X_att, dataset_type): # to do
         faiss.omp_set_num_threads(48)
         print("Index params:", self._n_list)
         d = int(X.shape[1])  # Cast to native int
         nlist = int(self._n_list["clusters"])  # Cast to native int (handles any upstream float)
-        
+
+        # Fixed construction param: clusters ~ sqrt(|D|), computed per table.
+        # A configured value of 0 (or negative) requests this auto behaviour.
+        if nlist <= 0:
+            nlist = max(1, int(round(numpy.sqrt(X.shape[0]))))
+        self._nlist = nlist
+        print(f"FaissIVF: building index with nlist={nlist} for n={X.shape[0]} ({dataset_type})")
+
         self.quantizer = faiss.IndexFlatL2(d)
         self.index = faiss.IndexIVFFlat(self.quantizer, d, nlist)
 
@@ -101,10 +111,63 @@ class FaissIVF(Faiss):
         self.index.nprobe = self._n_probe
 
     def get_additional(self):
-        return {"dist_comps": faiss.cvar.indexIVF_stats.ndis + faiss.cvar.indexIVF_stats.nq * self._n_list["clusters"]}  # noqa
+        return {"dist_comps": faiss.cvar.indexIVF_stats.ndis + faiss.cvar.indexIVF_stats.nq * self._nlist}  # noqa
 
     def __str__(self):
-        return "FaissIVF(n_list=%d, n_probe=%d)" % (self._n_list["clusters"], self._n_probe)
+        return "FaissIVF(n_list=%d, n_probe=%d)" % (self._nlist, self._n_probe)
+
+
+class FaissFlat(Faiss):
+    """Exact brute-force search using a flat (IndexFlatIP) index, CPU based.
+
+    Filtered queries use the same bitset pre-filtering approach as the other
+    FAISS plans (a faiss.IDSelectorBitmap built from ``X_attr >= threshold``),
+    so the result is the exact filtered top-k (recall == 1.0). There are no
+    construction or search parameters to sweep.
+    """
+
+    def __init__(self, metric):
+        self._metric = metric
+        self.index = None
+
+    def fit(self, X_ids, X, X_att, dataset_type):
+        faiss.omp_set_num_threads(48)
+        d = int(X.shape[1])
+        if self._metric == "angular":
+            X = sklearn.preprocessing.normalize(X, axis=1, norm="l2")
+            self.index = faiss.IndexFlatIP(d)
+        else:
+            self.index = faiss.IndexFlatL2(d)
+        if X.dtype != numpy.float32:
+            X = X.astype(numpy.float32)
+        self.index.add(X)
+        print(f"FaissFlat: built IndexFlat{'IP' if self._metric == 'angular' else 'L2'} for n={X.shape[0]} ({dataset_type})")
+
+    def set_query_arguments(self, placeholder=0):
+        # Brute-force search has no tunable search parameters; accept and ignore
+        # the placeholder argument so the runner's query-argument loop works.
+        self._placeholder = placeholder
+
+    def query(self, v, n, fvalue=["No_filter"], X_attr=None):
+        if self._metric == "angular":
+            v = v / numpy.linalg.norm(v)
+        v = numpy.expand_dims(v, axis=0).astype(numpy.float32)
+        if fvalue == ["No_filter"]:
+            D, I = self.index.search(v, n)
+        else:
+            search_params = faiss.SearchParameters()
+            bitmap_bool = X_attr >= float(fvalue[2])
+            bitmap = numpy.packbits(bitmap_bool, bitorder="little")
+            bitmap = numpy.ascontiguousarray(bitmap, dtype=numpy.uint8)
+            search_params.sel = faiss.IDSelectorBitmap(bitmap)
+            D, I = self.index.search(v, n, params=search_params)
+        return I[0]
+
+    def get_additional(self):
+        return {"dist_comps": 0}
+
+    def __str__(self):
+        return "FaissFlat(metric=%s)" % self._metric
 
 
 class FaissIVFPQfs(Faiss):

@@ -56,6 +56,8 @@ class PGVector(BaseANN):
         self._clusters = method_param['clusters']
         self._cur = None
         self._query = None
+        self._lists = None  # actual lists used (auto = round(sqrt(|D|)) when configured <= 0)
+        self._n = 0
 
     def set_query(self, metric, filter):
         if metric == "angular":
@@ -150,6 +152,15 @@ class PGVector(BaseANN):
         #cur.execute("SET maintenance_work_mem = '8GB'")
         #cur.execute("SET work_mem = '1GB'")
 
+        self._n = int(X.shape[0])
+        # Fixed construction param: number of IVF lists ~ sqrt(|D|), computed
+        # per table. A configured value of 0 (or negative) requests this.
+        lists = int(self._clusters) if self._clusters is not None else 0
+        if lists <= 0:
+            lists = max(1, int(round(self._n ** 0.5)))
+        self._lists = lists
+        print(f"pgvector_ivf: building IVFFlat with lists={lists} for n={self._n} ({dataset_type})")
+
         cur.execute("DROP TABLE IF EXISTS items")
         cur.execute("CREATE TABLE items (id int, embedding vector(%d), filter_attr FLOAT)" % X.shape[1])
         cur.execute("ALTER TABLE items ALTER COLUMN embedding SET STORAGE PLAIN")
@@ -169,10 +180,10 @@ class PGVector(BaseANN):
         print("creating index...")
         if self._metric == "angular":
             cur.execute(
-                "CREATE INDEX ON items USING ivfflat (embedding vector_cosine_ops) WITH (lists = %d)" % (self._clusters)
+                "CREATE INDEX ON items USING ivfflat (embedding vector_cosine_ops) WITH (lists = %d)" % (self._lists)
             )
         elif self._metric == "euclidean":
-            cur.execute("CREATE INDEX ON items USING ivfflat (embedding vector_l2_ops) WITH (lists = %d)" % (self._clusters))
+            cur.execute("CREATE INDEX ON items USING ivfflat (embedding vector_l2_ops) WITH (lists = %d)" % (self._lists))
         else:
             raise RuntimeError(f"unknown metric {self._metric}")
         print("done!")
@@ -188,7 +199,13 @@ class PGVector(BaseANN):
     def set_query_arguments(self, probes):
         self._probes = probes
         self._cur.execute("SET ivfflat.probes = %d" % probes)
-        # pass
+        # Post-filtering with iterative scan turned ON: pgvector keeps probing
+        # additional lists (up to ivfflat.max_probes) until enough rows pass the
+        # WHERE filter. relaxed_order lets the scan grow efficiently.
+        self._cur.execute("SET ivfflat.iterative_scan = relaxed_order")
+        # Permit probing up to all lists so low-selectivity filters can still
+        # reach high recall; `probes` remains the swept starting point.
+        self._cur.execute("SET ivfflat.max_probes = %d" % max(100, probes))
 
     def query(self, v, n, filter):
         
@@ -224,6 +241,6 @@ class PGVector(BaseANN):
         return self._cur.fetchone()[0] / 1024
 
     def __str__(self):
-        try: self._ef_search
-        except AttributeError: self._ef_search = 0            
-        return f"PGVector(m={self._clusters}, ef_search={self._probes})"
+        try: self._probes
+        except AttributeError: self._probes = 0
+        return f"PGVectorIVF(lists={self._lists}, probes={self._probes})"

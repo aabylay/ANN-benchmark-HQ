@@ -44,30 +44,44 @@ if __name__ == "__main__":
     # Default to 16384 MB; adjust if using a different docker tag.
     write_milvus_user_yaml(segment_size_mb=16384)
 
-    # TODO: NEW ONE TO BE IMPLEMENTED "hnsw_cagra(faiss)"    
-    for dataset_size in ["small", "medium"]: # "small", "medium", "large"
+    # Fixed index construction params for the FANNS sweep.
+    HNSW_M = 16          # HNSW graph degree
+    HNSW_EF_C = 64       # HNSW efConstruction
+    # IVF number of lists is FIXED at ~sqrt(|D|) and computed per table inside
+    # each algorithm's fit() (passed as clusters=0 -> auto).
+
+    for dataset_size in ["large"]: # only the large MoRe dataset is benchmarked
         print(f"\n\n=======================================CHECKING DATASET SIZE {dataset_size}=======================================\n\n", flush=True)
 
-        """ Available algorithms list: 
-            ["milvus-hnsw", "pgvector", "hnsw(faiss)"]
-            ["milvus-ivfflat", "pgvector_ivf", "faiss-ivf"]
+        """ FANNS plans benchmarked (2 systems x 3 index types):
+            FAISS    : faiss-flat (brute-force, IndexFlatIP + bitset pre-filter)
+                       hnsw(faiss) (HNSW, bitset pre-filter)
+                       faiss-ivf  (IVFFlat, bitset pre-filter)
+            PG-Vector: pgvector_bf (brute-force, no index, SQL post-filter)
+                       pgvector    (HNSW, post-filter w/ iterative scan)
+                       pgvector_ivf(IVFFlat, post-filter w/ iterative scan)
         """
-        
-        for algo in [ "pgvector_ivf", "milvus-ivfflat", "faiss-ivf", "milvus-hnsw", "pgvector", "hnsw(faiss)"]: # "pgvector_ivf", "milvus-ivfflat", "faiss-ivf", "milvus-hnsw", "pgvector", "hnsw(faiss)"
-            print(f"----------------------------------------\nRunning experiments for algorithm: {algo}", flush=True)            
-            if algo in ["milvus-hnsw", "pgvector", "hnsw(faiss)"]:
-                for m in [5]: # [5, 10, 15]
-                    ef_c = m * 5
-                    make_yaml(algo, m, ef_c, ef_s_list)
-                    print(f"Running for HNSW on dataset size '{dataset_size}' with m: {m}", flush=True)
-                    os.system(f"python run.py --algorithm \"{algo}\" --dataset glove-100-angular --dataset_size {dataset_size}")
-                    print(f"Finished for HNSW on dataset size '{dataset_size}' with m: {m}, algo: {algo}\n", flush=True)
-            
-            if algo in ["pgvector_ivf", "faiss-ivf", "milvus-ivfflat"]:
-                make_yaml(algo, 0, None, None, True, f"{dataset_size}")
-                print(f"Running for IVF on dataset size '{dataset_size}'...", flush=True)
-                #### To pass placeholder for clusters and change later in runner
+
+        for algo in ["faiss-flat", "hnsw(faiss)", "faiss-ivf",
+                     "pgvector_bf", "pgvector", "pgvector_ivf"]:
+            print(f"----------------------------------------\nRunning experiments for algorithm: {algo}", flush=True)
+
+            if algo in ["milvus-hnsw", "pgvector", "hnsw(faiss)"]:  # HNSW plans (fixed m, ef_construction)
+                make_yaml(algo, HNSW_M, HNSW_EF_C, ef_s_list)
+                print(f"Running HNSW '{algo}' on dataset size '{dataset_size}' (m={HNSW_M}, ef_construction={HNSW_EF_C})", flush=True)
                 os.system(f"python run.py --algorithm \"{algo}\" --dataset glove-100-angular --dataset_size {dataset_size}")
-                print(f"Finished for IVF on dataset size '{dataset_size}', algo: {algo}\n", flush=True)
-                
+                print(f"Finished HNSW '{algo}' on dataset size '{dataset_size}'\n", flush=True)
+
+            elif algo in ["pgvector_ivf", "faiss-ivf", "milvus-ivfflat"]:  # IVFFlat plans (clusters auto ~ sqrt|D|)
+                make_yaml(algo, 0, None, None, True, f"{dataset_size}")
+                print(f"Running IVFFlat '{algo}' on dataset size '{dataset_size}' (clusters ~ sqrt(|D|))...", flush=True)
+                os.system(f"python run.py --algorithm \"{algo}\" --dataset glove-100-angular --dataset_size {dataset_size}")
+                print(f"Finished IVFFlat '{algo}' on dataset size '{dataset_size}'\n", flush=True)
+
+            elif algo in ["faiss-flat", "pgvector_bf"]:  # brute-force (exact) plans
+                make_yaml(algo)
+                print(f"Running brute-force '{algo}' on dataset size '{dataset_size}'...", flush=True)
+                os.system(f"python run.py --algorithm \"{algo}\" --dataset glove-100-angular --dataset_size {dataset_size}")
+                print(f"Finished brute-force '{algo}' on dataset size '{dataset_size}'\n", flush=True)
+
             print(f"----------------------------------------\nFinished experiments for algorithm: {algo}", flush=True)

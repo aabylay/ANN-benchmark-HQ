@@ -57,6 +57,7 @@ class PGVector(BaseANN):
         self._ef_construction = method_param['efConstruction']
         self._cur = None
         self._query = None
+        self._n = 0  # number of indexed rows, set in fit() (used for iterative scan caps)
 
     def set_query(self, metric, filter):
         if metric == "angular":
@@ -151,6 +152,8 @@ class PGVector(BaseANN):
         #cur.execute("SET maintenance_work_mem = '8GB'")
         #cur.execute("SET work_mem = '1GB'")
 
+        self._n = int(X.shape[0])
+
         cur.execute("DROP TABLE IF EXISTS items")
         cur.execute("CREATE TABLE items (id int, embedding vector(%d), filter_attr FLOAT)" % X.shape[1])
         cur.execute("ALTER TABLE items ALTER COLUMN embedding SET STORAGE PLAIN")
@@ -189,7 +192,15 @@ class PGVector(BaseANN):
     def set_query_arguments(self, ef_search):
         self._ef_search = ef_search
         self._cur.execute("SET hnsw.ef_search = %d" % ef_search)
-        # pass
+        # Post-filtering with iterative scan turned ON: when the WHERE filter
+        # removes too many of the ef_search candidates, pgvector keeps scanning
+        # the HNSW graph until enough rows pass the filter (or the caps below
+        # are hit). relaxed_order is used so the scan can grow efficiently.
+        self._cur.execute("SET hnsw.iterative_scan = relaxed_order")
+        # Allow the iterative scan to reach high recall even for low-selectivity
+        # filters by permitting it to scan up to the whole table if needed.
+        self._cur.execute("SET hnsw.max_scan_tuples = %d" % max(round(self._n * 0.05), 1))
+        self._cur.execute("SET hnsw.scan_mem_multiplier = 16")
 
     def query(self, v, n, filter):
         

@@ -11,11 +11,10 @@ float:
       IVFFlat:
         args:
           clusters:
-          - 300
-          - 1200
+          - 0
         query_args:
         - - 1
           - 5
           - 10
           - 50
-          - 150
+          - 300
