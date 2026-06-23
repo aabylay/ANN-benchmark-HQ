@@ -2,11 +2,11 @@ float:
   any:
   - base_args:
     - '@metric'
-    constructor: FaissHNSW
+    constructor: FaissHNSWPostFilter
     disabled: false
     docker_tag: ann-benchmarks-faiss
     module: ann_benchmarks.algorithms.faiss_hnsw
-    name: hnsw(faiss)
+    name: hnsw(faiss)-post
     run_groups:
       M-16:
         arg_groups:
@@ -14,11 +14,7 @@ float:
           efConstruction: 64
         args: {}
         query_args:
-#        - - 100
-#          - 200
-#          - 500
-#          - 1000
-        - - 1200
-          - 1500
-          - 1750
-          - 2000
+        - - 100
+          - 200
+          - 500
+          - 1000

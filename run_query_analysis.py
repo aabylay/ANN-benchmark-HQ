@@ -96,6 +96,9 @@ def run_docker_container(
         network_mode="host",
         cpuset_cpus=cpu_limit,
         mem_limit=mem_limit,
+        # Match /dev/shm to the memory budget so PostgreSQL parallel index
+        # builds (DSM segments under /dev/shm) don't hit the 64 MB default.
+        shm_size=mem_limit,
         detach=True,
     )
     

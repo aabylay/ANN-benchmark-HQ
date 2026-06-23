@@ -174,7 +174,7 @@ def make_yaml(algo, m=None, ef_c=None, ef_s_list=None, ivf_algo=False, dataset_s
                         "base_args": ["@metric"],
                         "constructor": "FaissHNSW",
                         "disabled": False,
-                        "docker_tag": "custom-hnsw-faiss",
+                        "docker_tag": "ann-benchmarks-faiss",
                         "module": "ann_benchmarks.algorithms.faiss_hnsw",
                         "name": "hnsw(faiss)",
                         "run_groups": {
@@ -182,6 +182,53 @@ def make_yaml(algo, m=None, ef_c=None, ef_s_list=None, ivf_algo=False, dataset_s
                                 "arg_groups": [{"M": m, "efConstruction": ef_c}],
                                 "args": {},
                                 "query_args": [ef_s_list]
+                            }
+                        }
+                    }
+                ]
+            }
+        }
+
+    elif algo == "hnsw(faiss)-post":
+        output_path = f"ann_benchmarks/algorithms/faiss_hnsw_post/config.yml"
+        data = {
+            "float": {
+                "any": [
+                    {
+                        "base_args": ["@metric"],
+                        "constructor": "FaissHNSWPostFilter",
+                        "disabled": False,
+                        "docker_tag": "ann-benchmarks-faiss",
+                        "module": "ann_benchmarks.algorithms.faiss_hnsw",
+                        "name": "hnsw(faiss)-post",
+                        "run_groups": {
+                            f"M-{m}": {
+                                "arg_groups": [{"M": m, "efConstruction": ef_c}],
+                                "args": {},
+                                "query_args": [ef_s_list]
+                            }
+                        }
+                    }
+                ]
+            }
+        }
+
+    elif algo == "faiss-ivf-post":
+        output_path = f"ann_benchmarks/algorithms/faiss_ivf_post/config.yml"
+        data = {
+            "float": {
+                "any": [
+                    {
+                        "base_args": ["@metric"],
+                        "constructor": "FaissIVFPostFilter",
+                        "disabled": False,
+                        "docker_tag": "ann-benchmarks-faiss",
+                        "module": "ann_benchmarks.algorithms.faiss",
+                        "name": "faiss-ivf-post",
+                        "run_groups": {
+                            f"base": {
+                                "args": {"clusters": clusters},
+                                "query_args": [probes]
                             }
                         }
                     }
@@ -198,7 +245,7 @@ def make_yaml(algo, m=None, ef_c=None, ef_s_list=None, ivf_algo=False, dataset_s
                         "base_args": ["@metric"],
                         "constructor": "FaissIVF",
                         "disabled": False,
-                        "docker_tag": "custom-hnsw-faiss",
+                        "docker_tag": "ann-benchmarks-faiss",
                         "module": "ann_benchmarks.algorithms.faiss",
                         "name": "faiss-ivf",
                         "run_groups": {
@@ -223,7 +270,7 @@ def make_yaml(algo, m=None, ef_c=None, ef_s_list=None, ivf_algo=False, dataset_s
                         "base_args": ["@metric"],
                         "constructor": "FaissFlat",
                         "disabled": False,
-                        "docker_tag": "custom-hnsw-faiss",
+                        "docker_tag": "ann-benchmarks-faiss",
                         "module": "ann_benchmarks.algorithms.faiss",
                         "name": "faiss-flat",
                         "run_groups": {

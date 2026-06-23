@@ -23,6 +23,14 @@ from .results import store_results
 # Uncomment this to import results for ablation study
 # from .results_ablation import store_results
 
+FAISS_FILTERED_ALGOS = [
+    "faiss-ivf",
+    "hnsw(faiss)",
+    "faiss-flat",
+    "faiss-ivf-post",
+    "hnsw(faiss)-post",
+]
+
 
 def run_individual_query(algo: BaseANN, X_train: numpy.array, X_test: numpy.array, distance: str, count: int, 
                          run_count: int, batch: bool, filter: str, X_attr: numpy.array = None, faiss_algo: bool = False) -> Tuple[dict, list]:
@@ -505,7 +513,7 @@ function"""
                     for kk in kk_values:
                         query_argument_groups = definition.query_argument_groups.copy() or [[]]  # Ensure at least one iteration
                         print(definition.algorithm)
-                        if definition.algorithm in ["pgvector_ivf", "faiss-ivf", "milvus-ivfflat"]:
+                        if definition.algorithm in ["pgvector_ivf", "faiss-ivf", "faiss-ivf-post", "milvus-ivfflat"]:
                             if dataset_type == "reviews":
                                 extra_query_arguments = [[query_argument_groups[-1][-1] * 2]] # probes
                             else: extra_query_arguments = []
@@ -522,7 +530,7 @@ function"""
                             if query_arguments:
                                 algo.set_query_arguments(*query_arguments)
                                 
-                                if definition.algorithm in ["faiss-ivf", "hnsw(faiss)", "faiss-flat"] and ff != ["No_filter"]:
+                                if definition.algorithm in FAISS_FILTERED_ALGOS and ff != ["No_filter"]:
                                     # Select the correct attribute array that matches what was used in build_index
                                     if dataset_type == "movies":
                                         X_attr = X_attrs[0]
@@ -685,6 +693,14 @@ def run_docker(
         network_mode="host",
         cpuset_cpus=cpu_limit,
         mem_limit=mem_limit,
+        # Size /dev/shm to the container's memory budget. PostgreSQL parallel
+        # index builds (e.g. pgvector HNSW with max_parallel_maintenance_workers
+        # > 0) place the shared graph in a POSIX dynamic-shared-memory segment
+        # under /dev/shm, sized up to maintenance_work_mem. Docker's default
+        # /dev/shm is only 64 MB, so large builds fail with "could not resize
+        # shared memory segment ... No space left on device". Matching shm_size
+        # to mem_limit lets the build use the same memory budget on every host.
+        shm_size=mem_limit,
         detach=True,
     )
     logger = logging.getLogger(f"annb.{container.short_id}")

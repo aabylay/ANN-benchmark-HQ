@@ -7,6 +7,7 @@ import sklearn.preprocessing
 
 from faiss import swig_ptr
 from ..base.module import BaseANN
+from .postfilter import apply_post_filter, compute_search_k, filter_mask_from_fvalue
 
 
 class Faiss(BaseANN):
@@ -115,6 +116,28 @@ class FaissIVF(Faiss):
 
     def __str__(self):
         return "FaissIVF(n_list=%d, n_probe=%d)" % (self._nlist, self._n_probe)
+
+
+class FaissIVFPostFilter(FaissIVF):
+    """IVFFlat with post-filtering: over-fetch candidates, then filter in numpy."""
+
+    def query(self, v, n, fvalue=["No_filter"], X_attr=None):
+        if self._metric == "angular":
+            v /= numpy.linalg.norm(v)
+        v = numpy.expand_dims(v, axis=0).astype(numpy.float32)
+
+        if fvalue == ["No_filter"]:
+            _, I = self.index.search(v, n)
+            return I[0]
+
+        filter_mask = filter_mask_from_fvalue(X_attr, fvalue)
+        selectivity = float(filter_mask.mean())
+        search_k = compute_search_k(n, selectivity)
+        _, I = self.index.search(v, search_k)
+        return apply_post_filter(I[0], filter_mask, n)
+
+    def __str__(self):
+        return "FaissIVF-post(n_list=%d, n_probe=%d)" % (self._nlist, self._n_probe)
 
 
 class FaissFlat(Faiss):

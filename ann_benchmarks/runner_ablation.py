@@ -243,7 +243,7 @@ def run(definition: Definition, dataset_name: str, dataset_size: str, run_count:
                     for kk in kk_values:
                         query_argument_groups = definition.query_argument_groups.copy() or [[]]
                         print(definition.algorithm)
-                        if definition.algorithm in ["pgvector_ivf", "faiss-ivf", "milvus-ivfflat"]:
+                        if definition.algorithm in ["pgvector_ivf", "faiss-ivf", "faiss-ivf-post", "milvus-ivfflat"]:
                             if dataset_type == "reviews":
                                 extra_query_arguments = [[query_argument_groups[-1][-1] * 2]]
                             else: 
@@ -258,7 +258,7 @@ def run(definition: Definition, dataset_name: str, dataset_size: str, run_count:
                             if query_arguments:
                                 algo.set_query_arguments(*query_arguments)
                                 
-                                if definition.algorithm in ["faiss-ivf", "hnsw(faiss)"] and ff != ["No_filter"]:
+                                if definition.algorithm in ["faiss-ivf", "faiss-ivf-post", "hnsw(faiss)", "hnsw(faiss)-post"] and ff != ["No_filter"]:
                                     if dataset_type == "movies":
                                         X_attr = X_attrs[0]
                                     elif dataset_type == "reviews":
@@ -367,6 +367,9 @@ def run_docker(
         network_mode="host",
         cpuset_cpus=cpu_limit,
         mem_limit=mem_limit,
+        # Match /dev/shm to the memory budget so PostgreSQL parallel index
+        # builds (DSM segments under /dev/shm) don't hit the 64 MB default.
+        shm_size=mem_limit,
         detach=True,
     )
     logger = logging.getLogger(f"annb.ablation.{container.short_id}")

@@ -3,6 +3,7 @@ from faiss import swig_ptr
 import numpy as np
 
 from ..faiss.module import Faiss
+from ..faiss.postfilter import apply_post_filter, compute_search_k, filter_mask_from_fvalue
 
 
 class FaissHNSW(Faiss):
@@ -29,7 +30,7 @@ class FaissHNSW(Faiss):
         # print("X_att:", X_att[:10])
             
         self.index.add(X)
-        self.index.add_att(X.shape[0], swig_ptr(X_att)) # new line
+        #self.index.add_att(X.shape[0], swig_ptr(X_att)) # new line
         faiss.omp_set_num_threads(48)
 
     def set_query_arguments(self, ef):
@@ -76,3 +77,26 @@ class FaissHNSW(Faiss):
 
     def freeIndex(self):
         del self.p
+
+
+class FaissHNSWPostFilter(FaissHNSW):
+    """HNSW with post-filtering: over-fetch candidates, then filter in numpy."""
+
+    def query(self, v, n, fvalue=["No_filter"], X_attr=None):
+        if fvalue == ["No_filter"]:
+            return super().query(v, n, fvalue, X_attr)
+
+        filter_mask = filter_mask_from_fvalue(X_attr, fvalue)
+        selectivity = float(filter_mask.mean())
+        search_k = compute_search_k(n, selectivity)
+
+        search_params = faiss.SearchParametersHNSW()
+        search_params.efSearch = max(self.index.hnsw.efSearch, search_k)
+        search_params.check_relative_distance = self.index.hnsw.check_relative_distance
+
+        v = np.expand_dims(v, axis=0).astype(np.float32)
+        _, I = self.index.search(v, search_k, params=search_params)
+        return apply_post_filter(I[0], filter_mask, n)
+
+    def __str__(self):
+        return "faiss-hnsw-post (%s, ef: %d)" % (self.method_param, self.index.hnsw.efSearch)

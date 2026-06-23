@@ -4,7 +4,7 @@ float:
     - '@metric'
     constructor: FaissFlat
     disabled: false
-    docker_tag: custom-hnsw-faiss
+    docker_tag: ann-benchmarks-faiss
     module: ann_benchmarks.algorithms.faiss
     name: faiss-flat
     run_groups:

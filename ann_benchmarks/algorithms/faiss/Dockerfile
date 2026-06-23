@@ -1,18 +1,10 @@
 FROM ann-benchmarks
 
-RUN apt update && apt install -y wget
-RUN wget https://repo.anaconda.com/archive/Anaconda3-2020.11-Linux-x86_64.sh
-RUN bash Anaconda3-2020.11-Linux-x86_64.sh -b
+# Standard (upstream) FAISS, modern enough to expose the filtered-search API the
+# FAISS modules rely on: SearchParametersHNSW / SearchParametersIVF /
+# IDSelectorBitmap. This replaces the old conda faiss-cpu 1.7.1 image (and the
+# out-of-tree "custom-hnsw-faiss" image), which lacked those symbols.
+RUN pip3 install --no-cache-dir faiss-cpu==1.12.0
 
-ENV PATH /root/anaconda3/bin:$PATH
-
-RUN python3 -m pip install ansicolors==1.1.8 docker==5.0.2
-RUN conda install -c pytorch faiss-cpu h5py numpy 
-
-# https://developpaper.com/a-pit-of-mkl-library-in-linux-anaconda/
-ENV LD_PRELOAD /root/anaconda3/lib/libmkl_core.so:/root/anaconda3/lib/libmkl_sequential.so 
-
-RUN python3 -c 'import faiss; print(faiss.IndexFlatL2)'
-
-
-
+RUN python3 -c "import faiss; print('faiss', faiss.__version__)"
+RUN python3 -c "import faiss; missing=[a for a in ['IndexFlatL2','IndexHNSWFlat','SearchParametersHNSW','SearchParametersIVF','IDSelectorBitmap'] if not hasattr(faiss, a)]; assert not missing, 'missing faiss API: %s' % missing; print('faiss filtered-search API OK')"
