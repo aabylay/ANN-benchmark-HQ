@@ -1,7 +1,7 @@
 """
 Build a NEW query workload for the MoRe_large dataset
-(== imdb_data/final/10000/MoRe, downloaded/converted into
- data/datasets/MoRe_large with columns train_mvector/train_avgrating/train_mid
+(Google Drive MoReVec / load_morevec.py → data/datasets/MoRe_large,
+ with columns train_mvector/train_avgrating/train_mid
  and train_rvector/train_total_votes/train_rid).
 
 What it produces (under data/datasets/MoRe_large/):
