@@ -11,10 +11,23 @@ float:
       M-16:
         arg_groups:
         - M: 16
-          efConstruction: 64
+          efConstruction: 128
         args: {}
         query_args:
         - - 100
           - 200
+          - 300
+          - 400
           - 500
+          - 600
+          - 700
+          - 800
+          - 900
           - 1000
+          - 1200
+          - 1400
+          - 1600
+          - 1800
+          - 2000
+          - 2250
+          - 2500

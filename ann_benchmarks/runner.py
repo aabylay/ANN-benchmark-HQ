@@ -502,7 +502,7 @@ function"""
                 if att_idx: algo.fit_idx(dataset_type)
                 for fid, ff in zip(filter_ids, filters):
                     # k is FIXED for the FANNS sweep (only search params are swept).
-                    kk_values = [10]
+                    kk_values = [10, 20, 40]
                     X_test, distance = load_workload_dataset(dataset_type, fid, dataset_size)
                     ff = parse_filter(ff)
                     print(f"Running with filter: {ff}")

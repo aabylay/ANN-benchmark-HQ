@@ -3,7 +3,10 @@ import os
 import re
 from make_yaml import make_yaml
 
-ef_s_list = [100, 200, 500, 1000]
+# HNSW efSearch sweep (finer grid for Direction 4.5: separate model error from
+# grid-coarseness). starter.py regenerates each HNSW config.yml from this list
+# via make_yaml(), so this is the single source of truth for the efSearch grid.
+ef_s_list = [40, 60, 80]
 
 
 def write_milvus_user_yaml(segment_size_mb=16384):
@@ -46,7 +49,7 @@ if __name__ == "__main__":
 
     # Fixed index construction params for the FANNS sweep.
     HNSW_M = 16          # HNSW graph degree
-    HNSW_EF_C = 64       # HNSW efConstruction
+    HNSW_EF_C = 128       # HNSW efConstruction
     # IVF number of lists is FIXED at ~sqrt(|D|) and computed per table inside
     # each algorithm's fit() (passed as clusters=0 -> auto).
 
@@ -64,8 +67,7 @@ if __name__ == "__main__":
                        pgvector_ivf(IVFFlat, post-filter w/ iterative scan)
         """
 
-        for algo in ["faiss-ivf", "faiss-ivf-post",
-                     "pgvector", "pgvector_ivf"]: # "hnsw(faiss)", "hnsw(faiss)-post", 
+        for algo in ["faiss-flat", "hnsw(faiss)", "hnsw(faiss)-post", "faiss-ivf", "faiss-ivf-post"]: # "faiss-ivf", "faiss-ivf-post", "pgvector", "pgvector_ivf"
             print(f"----------------------------------------\nRunning experiments for algorithm: {algo}", flush=True)
 
             if algo in ["milvus-hnsw", "pgvector", "hnsw(faiss)", "hnsw(faiss)-post"]:  # HNSW plans (fixed m, ef_construction)

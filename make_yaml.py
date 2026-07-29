@@ -11,7 +11,8 @@ def make_yaml(algo, m=None, ef_c=None, ef_s_list=None, ivf_algo=False, dataset_s
         elif dataset_size == 'medium':
             probes = [1, 5, 10, 50, 150]
         elif dataset_size == 'large':
-            probes = [5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+            probes = [5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100,
+                      120, 140, 160, 180, 200, 225, 250]
         else:
             probes = [5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
     else:
