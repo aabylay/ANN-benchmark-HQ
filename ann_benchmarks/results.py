@@ -17,7 +17,8 @@ def build_result_filepath(dataset_name: Optional[str] = None,
                           dataset_size: str = "small",
                           data_table: str = "movies",
                           att_idx: int = 0,
-                          segment_size: Optional[int] = None) -> str:
+                          segment_size: Optional[int] = None,
+                          workload: str = "flex") -> str:
     """
     Constructs the filepath for storing the results.
 
@@ -28,10 +29,22 @@ def build_result_filepath(dataset_name: Optional[str] = None,
         query_arguments (Any, optional): Additional arguments for the query.
         batch_mode (bool, optional): If True, the batch mode is activated.
         segment_size (int, optional): Milvus segment size in MB; when set, uses ablation path results/ablation_seg{N}/.
+        workload (str): ``flex`` (default fid layout) or ``hard`` / ``superhard``.
 
     Returns:
         str: The constructed filepath.
     """
+    if workload in ("hard", "superhard"):
+        # results/MoRe_UPD_{size}_{hard|superhard}_{table}/{k}/{algo}/...
+        d = ["results", f"MoRe_UPD_{dataset_size}_{workload}_{data_table}"]
+        if count:
+            d.append(str(count))
+        if definition:
+            d.append(definition.algorithm + ("-batch" if batch_mode else ""))
+            data = definition.arguments + query_arguments
+            d.append(data_table + "_" + re.sub(r"\W+", "_", json.dumps(data, sort_keys=True)).strip("_") + ".hdf5")
+        return os.path.join(*d)
+
     if segment_size is not None:
         d = ["results", f"ablation_seg{segment_size}", f"MoRe_UPD_{dataset_size}_attidx_{att_idx}"]
     else:
@@ -48,7 +61,7 @@ def build_result_filepath(dataset_name: Optional[str] = None,
     return os.path.join(*d)
 
 
-def store_results(dataset_name: str, count: int, definition: Definition, query_arguments: Any, attrs, results, batch, filter_id, dataset_size, data_table, att_idx=0, segment_size: Optional[int] = None):
+def store_results(dataset_name: str, count: int, definition: Definition, query_arguments: Any, attrs, results, batch, filter_id, dataset_size, data_table, att_idx=0, segment_size: Optional[int] = None, workload: str = "flex"):
     """
     Stores results for an algorithm (and hyperparameters) running against a dataset in a HDF5 file.
 
@@ -61,8 +74,9 @@ def store_results(dataset_name: str, count: int, definition: Definition, query_a
         results (list): Results to be stored.
         batch (bool): If True, the batch mode is activated.
         segment_size (int, optional): Milvus segment size in MB; when set, uses ablation path.
+        workload (str): ``flex`` (default) or ``hard`` / ``superhard``.
     """
-    filename = build_result_filepath(dataset_name, count, definition, query_arguments, batch, filter_id, dataset_size, data_table, att_idx, segment_size)
+    filename = build_result_filepath(dataset_name, count, definition, query_arguments, batch, filter_id, dataset_size, data_table, att_idx, segment_size, workload=workload)
     directory, _ = os.path.split(filename)
     print(f"===========\nSaving results with filename: {filename}\n===========")
     if not os.path.isdir(directory):
@@ -75,6 +89,7 @@ def store_results(dataset_name: str, count: int, definition: Definition, query_a
     with h5py.File(filename, "w") as f:
         if segment_size is not None:
             attrs = {**attrs, "segment_size": segment_size}
+        attrs = {**attrs, "workload": workload}
         for k, v in attrs.items():
             f.attrs[k] = v
         times = f.create_dataset("times", (len(results),), "f")
@@ -89,8 +104,6 @@ def store_results(dataset_name: str, count: int, definition: Definition, query_a
             except Exception as e:
                 print(f"Error storing neighbors for result {i}: {ds}", flush=True)
                 raise e
-            
-
 
 def load_all_results(dataset: Optional[str] = None, 
                  count: Optional[int] = None, 

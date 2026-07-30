@@ -32,6 +32,13 @@ import psycopg
 from typing import Dict, Any, Optional
 
 from ..base.module import BaseANN
+from ..pgvector_common import (
+    copy_items_rows,
+    create_attr_indexes,
+    create_items_table,
+    filtered_order_query,
+    prepare_attrs,
+)
 from ...util import get_bool_env_var
 
 
@@ -60,33 +67,7 @@ class PGVector(BaseANN):
         self._n = 0
 
     def set_query(self, metric, filter):
-        if metric == "angular":
-            if filter == ["No_filter"] or filter == "No_filter":
-                
-                self._query = """
-                    SELECT id
-                    FROM items
-                    ORDER BY embedding <=> %s
-                    LIMIT %s
-                """
-                
-            else:
-                attr, literal, value = filter[0], filter[1], filter[2]
-                
-                self._query = f"""
-                    SELECT id 
-                    FROM items 
-                    WHERE filter_attr {literal} {value}::FLOAT
-                    ORDER BY embedding <=> %s
-                    LIMIT %s
-                """
-            # self._query = """SELECT COUNT(*) FROM items WHERE averagerating >= %s"""
-            # self._query = """SELECT COUNT(*) FROM items WHERE averagerating >= %s AND embedding <=> %s LIMIT %s"""
-            # self._query = """SELECT COUNT(*) FROM items"""
-        elif metric == "euclidean":
-            self._query = "SELECT id FROM items ORDER BY embedding <-> %s LIMIT %s"
-        else:
-            raise RuntimeError(f"unknown metric {metric}")
+        self._query = filtered_order_query(metric, filter, self._dataset_type)
         return self._query
 
     def ensure_pgvector_extension_created(self, conn: psycopg.Connection) -> None:
@@ -153,6 +134,9 @@ class PGVector(BaseANN):
         #cur.execute("SET work_mem = '1GB'")
 
         self._n = int(X.shape[0])
+        self._dataset_type = dataset_type
+        attrs = prepare_attrs(X_attr, dataset_type)
+        self._attrs = attrs
         # Fixed construction param: number of IVF lists ~ sqrt(|D|), computed
         # per table. A configured value of 0 (or negative) requests this.
         lists = int(self._clusters) if self._clusters is not None else 0
@@ -161,18 +145,11 @@ class PGVector(BaseANN):
         self._lists = lists
         print(f"pgvector_ivf: building IVFFlat with lists={lists} for n={self._n} ({dataset_type})")
 
-        cur.execute("DROP TABLE IF EXISTS items")
-        cur.execute("CREATE TABLE items (id int, embedding vector(%d), filter_attr FLOAT)" % X.shape[1])
-        cur.execute("ALTER TABLE items ALTER COLUMN embedding SET STORAGE PLAIN")
-        # SHOW shared_buffers;
+        cols = create_items_table(cur, X.shape[1], dataset_type, attrs)
         print("copying data...")
         try:
-            with cur.copy("COPY items (id, embedding, filter_attr) FROM STDIN WITH (FORMAT BINARY)") as copy:
-                copy.set_types(["int4", "vector", "float8"])
-                for i, embedding in enumerate(X):
-                    copy.write_row((i, embedding.tolist(), float(X_attr[i])))
+            copy_items_rows(cur, X, attrs, cols)
         except Exception as e:
-            print(f"ID: {i}, === SHAPE: {X_attr.shape}, === VALUE: {float(X_attr[i])}, === TYPE: {type(X_attr)}, === VALUE TYPE: {type(float(X_attr[i]))}")
             print(f"Error during COPY: {e}")
             raise
 
@@ -193,8 +170,7 @@ class PGVector(BaseANN):
     # NEW FUNCTION: create index on filter attribute
     def fit_idx(self, dataset_type):
         print("creating attribute index...")
-        self._cur.execute("CREATE INDEX ON items (filter_attr)")
-        print(f"[PGVector] Created index on filter_attr")
+        create_attr_indexes(self._cur, dataset_type)
         
     def set_query_arguments(self, probes):
         self._probes = probes

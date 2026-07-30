@@ -16,8 +16,9 @@ import re
 from ann_benchmarks.algorithms.base.module import BaseANN
 
 from .definitions import Definition, instantiate_algorithm
-from .datasets import DATASETS, get_dataset, get_train_dataset, get_filters, get_workload_dataset
+from .datasets import DATASETS, get_dataset, get_train_dataset, get_filters, get_workload_dataset, get_hard_workload_dataset
 from .distance import dataset_transform, metrics
+from .attrs import build_attrs_dict, primary_attr_array
 
 from .results import store_results
 # Uncomment this to import results for ablation study
@@ -31,9 +32,16 @@ FAISS_FILTERED_ALGOS = [
     "hnsw(faiss)-post",
 ]
 
+MULTI_ATTR_ALGOS = FAISS_FILTERED_ALGOS + [
+    "pgvector",
+    "pgvector_ivf",
+    "pgvector_bf",
+]
+
 
 def run_individual_query(algo: BaseANN, X_train: numpy.array, X_test: numpy.array, distance: str, count: int, 
-                         run_count: int, batch: bool, filter: str, X_attr: numpy.array = None, faiss_algo: bool = False) -> Tuple[dict, list]:
+                         run_count: int, batch: bool, filter: str, X_attr: numpy.array = None, faiss_algo: bool = False,
+                         per_query_filters: Optional[List] = None) -> Tuple[dict, list]:
     """Run a search query using the provided algorithm and report the results.
 
     Args:
@@ -44,6 +52,7 @@ def run_individual_query(algo: BaseANN, X_train: numpy.array, X_test: numpy.arra
         count (int): The number of nearest neighbors to return.
         run_count (int): The number of times to run the query.
         batch (bool): Flag to indicate whether to run in batch mode or not.
+        per_query_filters: Optional per-query parsed filters (hard/superhard).
 
     Returns:
         tuple: A tuple with the attributes of the algorithm run and the results.
@@ -148,37 +157,18 @@ def run_individual_query(algo: BaseANN, X_train: numpy.array, X_test: numpy.arra
         if batch:
             results = batch_query(X_test)
         else:
-            """
-            print("checking shapes...")
-            print(X_test.shape)
-            print(X_test[:1].shape)
-            print(X_test[0].shape)
-            print(X_test[:, 0].shape)
-            print([x.shape for x in X_test[:1]])
-            print([x.shape for x in X_test[:2]])
-            
-            for x in X_test:
-                print(x.shape)
-                break 
-            
-            raise Exception("Debugging")
-            """
-
-            results = [single_query(x, filter) for x in X_test]
-            
-            # NOTE: X_test[idx] is for query plan testing only, should be X_test for actual experiments
-            # Uncomment this for query plan testing only (replaces vector numbers with "vector" text)
-            """
-            random_index = numpy.random.randint(0, len(X_test) - 1)
-            results = [single_query(x, filter) for x in [X_test[random_index]]]
-            
-            for i, result in enumerate(results):
-                # replace pattern f'[{float numbers array where at least 10 numbers are present}]' with text '[vector]'
-                # Pattern matches arrays like [-0.012313394,-0.046120428,...] including scientific notation
-                vector_pattern = r'\[-?\d+\.?\d*(?:[eE][+-]?\d+)?(?:,-?\d+\.?\d*(?:[eE][+-]?\d+)?)+\]'
-                processed_candidates = [re.sub(vector_pattern, '[vector]', candidate) for candidate in result[1]]
-                results[i] = (result[0], processed_candidates)
-            """
+            if per_query_filters is not None:
+                if len(per_query_filters) != len(X_test):
+                    raise ValueError(
+                        f"per_query_filters length {len(per_query_filters)} "
+                        f"!= n_queries {len(X_test)}"
+                    )
+                results = [
+                    single_query(x, per_query_filters[qi])
+                    for qi, x in enumerate(X_test)
+                ]
+            else:
+                results = [single_query(x, filter) for x in X_test]
 
         total_time = sum(time for time, _ in results)
         total_candidates = sum(len(candidates) for _, candidates in results)
@@ -352,10 +342,14 @@ def build_index(algo: BaseANN, X_train_ids: numpy.ndarray, X_train: numpy.ndarra
     t0 = time.time()
     memory_usage_before = algo.get_memory_usage()
     print("Memory usage before building index: ", memory_usage_before)
-    if dataset_type == "movies":
-        X_attr = X_attrs[0]
-    elif dataset_type == "reviews":
-        X_attr = X_attrs[4]
+    attrs_dict = build_attrs_dict(X_attrs, dataset_type)
+    if algo_name in MULTI_ATTR_ALGOS or algo_name == "":
+        # FAISS / pgvector: pass full name→column map (also default for unnamed).
+        X_attr = attrs_dict
+        print(f"--- ATTRS for {dataset_type}: {sorted(k for k,v in attrs_dict.items() if numpy.issubdtype(numpy.asarray(v).dtype, numpy.number))} ---")
+    else:
+        # Legacy single-column consumers (e.g. Milvus).
+        X_attr = primary_attr_array(attrs_dict, dataset_type)
         print("--- ATTR FOR REVIEW ---:", X_attr[0], type(X_attr[0]), type(X_attr))
     algo.fit(X_train_ids, X_train, X_attr, dataset_type)
 
@@ -466,8 +460,8 @@ function"""
             algo.done()
 '''
 
-# run function changed to support filters
-def run(definition: Definition, dataset_name: str, dataset_size: str, run_count: int, batch: bool, segment_size: Optional[int] = None) -> None:
+# run function changed to support filters + workload modes
+def run(definition: Definition, dataset_name: str, dataset_size: str, run_count: int, batch: bool, segment_size: Optional[int] = None, workload: str = "flex") -> None:
     """Run the algorithm benchmarking.
 
     Args:
@@ -476,8 +470,11 @@ def run(definition: Definition, dataset_name: str, dataset_size: str, run_count:
         max_k (int): The maximum number of nearest neighbors to return.
         run_count (int): The number of runs.
         batch (bool): If true, runs in batch mode.
+        workload (str): ``flex`` (default), ``hard``, or ``superhard``.
     """
-    # Map dataset sizes to their corresponding names for paths
+    if workload not in ("flex", "hard", "superhard"):
+        raise ValueError(f"Unknown workload: {workload}")
+
     algo = instantiate_algorithm(definition)
     assert not definition.query_argument_groups or hasattr(
         algo, "set_query_arguments"
@@ -486,83 +483,150 @@ error: query argument groups have been specified for {definition.module}.{defini
 algorithm instantiated from it does not implement the set_query_arguments \
 function"""
 
-    for dataset_type in ["movies", "reviews"]: # hardcoded for now, can be changed later ["movies", "reviews"]
-        print(f"Running on dataset type: {dataset_type}")
+    for dataset_type in ["movies", "reviews"]:
+        print(f"Running on dataset type: {dataset_type} (workload={workload})")
         X_train_ids, X_train, X_attrs, dimension = load_train_dataset(dataset_type, dataset_size)
-        filter_ids, filters = load_filters(dataset_type, dataset_size)
+        attrs_dict = build_attrs_dict(X_attrs, dataset_type)
 
         try:
             if hasattr(algo, "supports_prepared_queries"):
                 algo.supports_prepared_queries()
-                
+
             build_time, index_size = build_index(algo, X_train_ids, X_train, X_attrs, dataset_type, definition.algorithm)
-            # need to skip the rest for index building stats only
 
-            for att_idx in [0]: # [0 - for no attr idx, | 1 - for attr idx]
-                if att_idx: algo.fit_idx(dataset_type)
-                for fid, ff in zip(filter_ids, filters):
-                    # k is FIXED for the FANNS sweep (only search params are swept).
-                    kk_values = [10, 20, 40]
-                    X_test, distance = load_workload_dataset(dataset_type, fid, dataset_size)
-                    ff = parse_filter(ff)
-                    print(f"Running with filter: {ff}")
-                    # kk = 1
-                    # if ff == ['No_filter']:
-                    #    print("Skipping filter for No_filter")
-                    #    continue
-                    for kk in kk_values:
-                        query_argument_groups = definition.query_argument_groups.copy() or [[]]  # Ensure at least one iteration
-                        print(definition.algorithm)
-                        if definition.algorithm in ["pgvector_ivf", "faiss-ivf", "faiss-ivf-post", "milvus-ivfflat"]:
-                            if dataset_type == "reviews":
-                                extra_query_arguments = [[query_argument_groups[-1][-1] * 2]] # probes
-                            else: extra_query_arguments = []
-                        else:
-                            extra_query_arguments = [[k] for k in kk_values[:-1] if k >= kk] # except last k value
-                        # print(extra_query_arguments)
-                        # append query_argument_groups with extra_query_arguments
-                        query_argument_groups.extend(extra_query_arguments)
-                        print("Running on query argument groups:", query_argument_groups)
-                        
-                        for pos, query_arguments in enumerate(query_argument_groups, 1): 
-                        
-                            print(f"Running query argument group {pos} of {len(query_argument_groups)}...")
-                            if query_arguments:
-                                algo.set_query_arguments(*query_arguments)
-                                
-                                if definition.algorithm in FAISS_FILTERED_ALGOS and ff != ["No_filter"]:
-                                    # Select the correct attribute array that matches what was used in build_index
-                                    if dataset_type == "movies":
-                                        X_attr = X_attrs[0]
-                                    elif dataset_type == "reviews":
-                                        X_attr = X_attrs[4]
-                                    X_attr = X_attr.astype(numpy.float32)
-                                    descriptor, results = run_individual_query(algo, X_train, X_test, distance, kk, run_count, batch, ff, X_attr, True)
-                                else:
-                                    #if ff != ["No_filter"]:
-                                    #    print("\n", "-"*50, "\nRunning individual query...")
-                                    #    print("Filter:", ff, "| Algo:", definition.algorithm, "Not in:", ["faiss-ivf", "hnsw(faiss)"])
-                                        
-                                    descriptor, results = run_individual_query(algo, X_train, X_test, distance, kk, run_count, batch, ff)
-                                
-                                # print("Results:", results)
-                                # raise Exception("Debugging")
+            if workload in ("hard", "superhard"):
+                _run_hard_workload(
+                    algo, definition, dataset_name, dataset_size, dataset_type,
+                    run_count, batch, workload, X_train, attrs_dict,
+                    build_time, index_size,
+                )
+            else:
+                _run_flex_workload(
+                    algo, definition, dataset_name, dataset_size, dataset_type,
+                    run_count, batch, X_train, X_attrs, attrs_dict,
+                    build_time, index_size,
+                )
 
-                                descriptor.update({
-                                    "build_time": build_time,
-                                    "index_size": index_size,
-                                    "algo": definition.algorithm,
-                                    "dataset": dataset_name
-                                })
-
-                                store_results(dataset_name, kk, definition, query_arguments, descriptor, results, batch, fid, dataset_size, dataset_type, att_idx)
-                                
-                    
-        finally: # making sure that milvus finished and didn't crash
+        finally:
             if dataset_type == "reviews" and definition.algorithm == "milvus-ivfflat":
                 algo.done(final_call=True)
             else:
                 algo.done()
+
+
+def _run_flex_workload(
+    algo, definition, dataset_name, dataset_size, dataset_type,
+    run_count, batch, X_train, X_attrs, attrs_dict, build_time, index_size,
+):
+    """Existing flex path: fid loop, k∈{10,20,40}, attidx results."""
+    filter_ids, filters = load_filters(dataset_type, dataset_size)
+    for att_idx in [0]:
+        if att_idx:
+            algo.fit_idx(dataset_type)
+        for fid, ff in zip(filter_ids, filters):
+            kk_values = [10, 20, 40]
+            X_test, distance = load_workload_dataset(dataset_type, fid, dataset_size)
+            ff = parse_filter(ff)
+            print(f"Running with filter: {ff}")
+            for kk in kk_values:
+                query_argument_groups = definition.query_argument_groups.copy() or [[]]
+                print(definition.algorithm)
+                if definition.algorithm in ["pgvector_ivf", "faiss-ivf", "faiss-ivf-post", "milvus-ivfflat"]:
+                    if dataset_type == "reviews":
+                        extra_query_arguments = [[query_argument_groups[-1][-1] * 2]]
+                    else:
+                        extra_query_arguments = []
+                else:
+                    extra_query_arguments = [[k] for k in kk_values[:-1] if k >= kk]
+                query_argument_groups.extend(extra_query_arguments)
+                print("Running on query argument groups:", query_argument_groups)
+
+                for pos, query_arguments in enumerate(query_argument_groups, 1):
+                    print(f"Running query argument group {pos} of {len(query_argument_groups)}...")
+                    if query_arguments:
+                        algo.set_query_arguments(*query_arguments)
+
+                        if definition.algorithm in FAISS_FILTERED_ALGOS and ff != ["No_filter"]:
+                            descriptor, results = run_individual_query(
+                                algo, X_train, X_test, distance, kk, run_count, batch, ff, attrs_dict, True
+                            )
+                        else:
+                            descriptor, results = run_individual_query(
+                                algo, X_train, X_test, distance, kk, run_count, batch, ff
+                            )
+
+                        descriptor.update({
+                            "build_time": build_time,
+                            "index_size": index_size,
+                            "algo": definition.algorithm,
+                            "dataset": dataset_name,
+                        })
+                        store_results(
+                            dataset_name, kk, definition, query_arguments, descriptor, results,
+                            batch, fid, dataset_size, dataset_type, att_idx, workload="flex",
+                        )
+
+
+def _run_hard_workload(
+    algo, definition, dataset_name, dataset_size, dataset_type,
+    run_count, batch, workload, X_train, attrs_dict, build_time, index_size,
+):
+    """Hard/superhard packs: per-query filters, k=10 only, no fid loop."""
+    pack = get_hard_workload_dataset(dataset_type, workload, dataset_size)
+    try:
+        X_test = numpy.array(pack["test"])
+        raw_filters = pack["filter"][:]
+        filters = [
+            parse_filter(f.decode("utf-8") if isinstance(f, bytes) else str(f))
+            for f in raw_filters
+        ]
+        distance = "angular"
+        kk = 10
+        print(
+            f"Hard pack {workload}/{dataset_type}: {len(X_test)} queries, "
+            f"{len(set(tuple(f) for f in filters))} unique parsed filters"
+        )
+
+        query_argument_groups = definition.query_argument_groups.copy() or [[]]
+        if definition.algorithm in ["pgvector_ivf", "faiss-ivf", "faiss-ivf-post", "milvus-ivfflat"]:
+            if dataset_type == "reviews" and query_argument_groups and query_argument_groups[-1]:
+                extra_query_arguments = [[query_argument_groups[-1][-1] * 2]]
+            else:
+                extra_query_arguments = []
+            query_argument_groups.extend(extra_query_arguments)
+        print("Running on query argument groups:", query_argument_groups)
+
+        for pos, query_arguments in enumerate(query_argument_groups, 1):
+            print(f"Running query argument group {pos} of {len(query_argument_groups)}...")
+            if query_arguments:
+                algo.set_query_arguments(*query_arguments)
+
+            if definition.algorithm in FAISS_FILTERED_ALGOS:
+                descriptor, results = run_individual_query(
+                    algo, X_train, X_test, distance, kk, run_count, batch,
+                    ["No_filter"], attrs_dict, True, per_query_filters=filters,
+                )
+            else:
+                descriptor, results = run_individual_query(
+                    algo, X_train, X_test, distance, kk, run_count, batch,
+                    ["No_filter"], per_query_filters=filters,
+                )
+
+            descriptor.update({
+                "build_time": build_time,
+                "index_size": index_size,
+                "algo": definition.algorithm,
+                "dataset": dataset_name,
+                "workload": workload,
+                "data_table": dataset_type,
+            })
+            store_results(
+                dataset_name, kk, definition, query_arguments, descriptor, results,
+                batch, 0, dataset_size, dataset_type, 0, workload=workload,
+            )
+    finally:
+        pack.close()
+
 
 # --------------------------------------------------------------
 
@@ -600,6 +664,12 @@ def run_from_cmdline():
     )
     parser.add_argument("--segment_size", type=int, default=None,
                         help="Milvus segment size in MB for ablation study (extracted from docker_tag when running from host)")
+    parser.add_argument(
+        "--workload",
+        choices=["flex", "hard", "superhard"],
+        default="flex",
+        help="Workload mode: flex (default fid loop), hard, or superhard packs.",
+    )
     # New argument to parser
     parser.add_argument(
         "--filter",
@@ -625,7 +695,7 @@ def run_from_cmdline():
         query_argument_groups=query_args,
         disabled=False,
     )
-    run(definition, args.dataset, args.dataset_size, args.runs, args.batch, args.segment_size)
+    run(definition, args.dataset, args.dataset_size, args.runs, args.batch, args.segment_size, workload=args.workload)
 
 
 def run_docker(
@@ -636,7 +706,8 @@ def run_docker(
     timeout: int,
     batch: bool,
     cpu_limit: str,
-    mem_limit: Optional[int] = None
+    mem_limit: Optional[int] = None,
+    workload: str = "flex",
 ) -> None:
     """Runs `run_from_cmdline` within a Docker container with specified parameters and logs the output.
 
@@ -665,6 +736,8 @@ def run_docker(
         dataset_size,
         "--segment_size",
         str(segment_size),
+        "--workload",
+        workload,
     ]
     if batch:
         cmd += ["--batch"]

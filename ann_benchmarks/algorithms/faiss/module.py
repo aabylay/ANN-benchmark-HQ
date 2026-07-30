@@ -7,7 +7,30 @@ import sklearn.preprocessing
 
 from faiss import swig_ptr
 from ..base.module import BaseANN
+from ...attrs import coerce_attrs, filter_mask_from_attrs
 from .postfilter import apply_post_filter, compute_search_k, filter_mask_from_fvalue
+
+
+def _attrs_for_query(algo, X_attr):
+    """Prefer attrs stored at fit(); fall back to query-time X_attr."""
+    stored = getattr(algo, "_attrs", None)
+    if stored is not None:
+        return stored
+    if isinstance(X_attr, dict):
+        return X_attr
+    if X_attr is None:
+        raise ValueError("FAISS filtered query requires attrs (fit dict or X_attr)")
+    return {"_single": numpy.asarray(X_attr, dtype=numpy.float32)}
+
+
+def _bitmap_from_fvalue(algo, fvalue, X_attr):
+    attrs = _attrs_for_query(algo, X_attr)
+    if "_single" in attrs and len(attrs) == 1:
+        bitmap_bool = filter_mask_from_fvalue(attrs["_single"], fvalue)
+    else:
+        bitmap_bool = filter_mask_from_attrs(attrs, fvalue)
+    bitmap = numpy.packbits(bitmap_bool, bitorder="little")
+    return numpy.ascontiguousarray(bitmap, dtype=numpy.uint8)
 
 
 class Faiss(BaseANN):
@@ -18,17 +41,8 @@ class Faiss(BaseANN):
             pass
             D, I = self.index.search(numpy.expand_dims(v, axis=0).astype(numpy.float32), n)
         else:
-            """
-            D = numpy.empty((1, n), dtype=numpy.float32)
-            I = numpy.empty((1, n), dtype=numpy.int64)
-            v = numpy.expand_dims(v, axis=0).astype('float32')
-            self.index.filtered_search(1, swig_ptr(v), n, swig_ptr(D), swig_ptr(I), float(fvalue[2]))
-            """
-            # print("Attr value:", X_attr)
             search_params = faiss.SearchParametersIVF()
-            bitmap_bool = X_attr >= float(fvalue[2])
-            bitmap = numpy.packbits(bitmap_bool, bitorder='little')
-            bitmap = numpy.ascontiguousarray(bitmap, dtype=numpy.uint8)
+            bitmap = _bitmap_from_fvalue(self, fvalue, X_attr)
             sel = faiss.IDSelectorBitmap(bitmap)
             search_params.nprobe = self.index.nprobe
             search_params.sel = sel
@@ -88,6 +102,8 @@ class FaissIVF(Faiss):
             nlist = max(1, int(round(numpy.sqrt(X.shape[0]))))
         self._nlist = nlist
         print(f"FaissIVF: building index with nlist={nlist} for n={X.shape[0]} ({dataset_type})")
+        self._attrs = coerce_attrs(X_att, dataset_type)
+        self._dataset_type = dataset_type
 
         self.quantizer = faiss.IndexFlatL2(d)
         self.index = faiss.IndexIVFFlat(self.quantizer, d, nlist)
@@ -98,12 +114,8 @@ class FaissIVF(Faiss):
         if X.dtype != numpy.float32:
             X = X.astype(numpy.float32)
 
-        # X_att = X_att.astype(numpy.float32)
-        
         self.index.train(X)
         self.index.add(X)
-        # self.index.add_att(X.shape[0], swig_ptr(X_att)) # new line
-        # self.index = index
         
 
     def set_query_arguments(self, n_probe):
@@ -130,7 +142,11 @@ class FaissIVFPostFilter(FaissIVF):
             _, I = self.index.search(v, n)
             return I[0]
 
-        filter_mask = filter_mask_from_fvalue(X_attr, fvalue)
+        attrs = _attrs_for_query(self, X_attr)
+        if "_single" in attrs and len(attrs) == 1:
+            filter_mask = filter_mask_from_fvalue(attrs["_single"], fvalue)
+        else:
+            filter_mask = filter_mask_from_attrs(attrs, fvalue)
         selectivity = float(filter_mask.mean())
         search_k = compute_search_k(n, selectivity)
         _, I = self.index.search(v, search_k)
@@ -156,6 +172,8 @@ class FaissFlat(Faiss):
     def fit(self, X_ids, X, X_att, dataset_type):
         faiss.omp_set_num_threads(48)
         d = int(X.shape[1])
+        self._attrs = coerce_attrs(X_att, dataset_type)
+        self._dataset_type = dataset_type
         if self._metric == "angular":
             X = sklearn.preprocessing.normalize(X, axis=1, norm="l2")
             self.index = faiss.IndexFlatIP(d)
@@ -179,10 +197,7 @@ class FaissFlat(Faiss):
             D, I = self.index.search(v, n)
         else:
             search_params = faiss.SearchParameters()
-            bitmap_bool = X_attr >= float(fvalue[2])
-            bitmap = numpy.packbits(bitmap_bool, bitorder="little")
-            bitmap = numpy.ascontiguousarray(bitmap, dtype=numpy.uint8)
-            search_params.sel = faiss.IDSelectorBitmap(bitmap)
+            search_params.sel = faiss.IDSelectorBitmap(_bitmap_from_fvalue(self, fvalue, X_attr))
             D, I = self.index.search(v, n, params=search_params)
         return I[0]
 

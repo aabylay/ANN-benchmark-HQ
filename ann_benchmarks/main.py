@@ -73,11 +73,11 @@ def run_worker(cpu: int, mem_limit: int, args: argparse.Namespace, queue: multip
         if args.local:
             cpu_limit = str(cpu) if not args.batch else f"0-{multiprocessing.cpu_count() - 1}"
             print(f"Running in Docker with CPU limit: {cpu_limit} and memory limit: {mem_limit}")
-            run_docker(definition, args.dataset, args.dataset_size, args.runs, args.timeout, args.batch, cpu_limit, mem_limit)
+            run_docker(definition, args.dataset, args.dataset_size, args.runs, args.timeout, args.batch, cpu_limit, mem_limit, workload=getattr(args, "workload", "flex"))
         else:
             cpu_limit = str(cpu) if not args.batch else f"0-{multiprocessing.cpu_count() - 1}"
             print(f"Running in Docker with CPU limit: {cpu_limit} and memory limit: {mem_limit}")
-            run_docker(definition, args.dataset, args.dataset_size, args.runs, args.timeout, args.batch, cpu_limit, mem_limit)
+            run_docker(definition, args.dataset, args.dataset_size, args.runs, args.timeout, args.batch, cpu_limit, mem_limit, workload=getattr(args, "workload", "flex"))
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -94,6 +94,12 @@ def parse_arguments() -> argparse.Namespace:
     )
     parser.add_argument(
         "--dataset_size", default="small", help="choose the size of the dataset to use from options: (small, medium, large)"
+    )
+    parser.add_argument(
+        "--workload",
+        choices=["flex", "hard", "superhard"],
+        default="flex",
+        help="Workload mode: flex (default), hard, or superhard packs",
     )
     parser.add_argument(
         "--definitions", metavar="FOLDER", help="base directory of algorithms. Algorithm definitions expected at 'FOLDER/*/config.yml'", default="ann_benchmarks/algorithms"

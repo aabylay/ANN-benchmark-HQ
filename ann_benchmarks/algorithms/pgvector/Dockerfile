@@ -4,10 +4,10 @@ FROM ann-benchmarks
 
 RUN git clone https://github.com/pgvector/pgvector /tmp/pgvector
 
-RUN DEBIAN_FRONTEND=noninteractive apt-get -y install tzdata
-RUN apt-get update && apt-get install -y --no-install-recommends build-essential postgresql-common
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get -y install --no-install-recommends tzdata \
+    && apt-get install -y --no-install-recommends build-essential postgresql-common
 RUN /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
-RUN apt-get install -y --no-install-recommends postgresql-16 postgresql-server-dev-16
+RUN apt-get update && apt-get install -y --no-install-recommends postgresql-16 postgresql-server-dev-16
 RUN sh -c 'echo "local all all trust" > /etc/postgresql/16/main/pg_hba.conf'
 
 # Dynamically set OPTFLAGS based on the architecture

@@ -128,6 +128,29 @@ def get_workload_dataset(dataset_type: str, filter_id: str, dataset_size: str) -
     hdf5_file = h5py.File(hdf5_filename, "r")
     return hdf5_file
 
+
+def hard_pack_path(dataset_type: str, hardness: str, dataset_size: str = "large") -> str:
+    """Path to a hard/superhard query pack HDF5."""
+    if hardness == "hard":
+        name = f"{dataset_type}_hcbgen_match_pdf.hdf5"
+        sub = "hard_queries"
+    elif hardness == "superhard":
+        name = f"{dataset_type}_hcbgen_superhard.hdf5"
+        sub = "superhard_queries"
+    else:
+        raise ValueError(f"Unknown hardness: {hardness}")
+    return f"data/datasets/MoRe_{dataset_size}/{sub}/{name}"
+
+
+def get_hard_workload_dataset(
+    dataset_type: str, hardness: str, dataset_size: str = "large"
+) -> h5py.File:
+    """Open a hard/superhard pack (per-query filters + GT + hardness fields)."""
+    hdf5_filename = hard_pack_path(dataset_type, hardness, dataset_size)
+    print("Reading hard workload pack:", hdf5_filename)
+    return h5py.File(hdf5_filename, "r")
+
+
 # --- NEW CODE: END ---------------------------------------------------------------------------------
 
 
