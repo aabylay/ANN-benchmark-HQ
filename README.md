@@ -23,9 +23,9 @@ The current branch (`fannsqo`) focuses on **query plan selection**: comparing pr
 
 **Post-filtering (FAISS)** is implemented in `ann_benchmarks/algorithms/faiss/postfilter.py`. For a target `k` and filter selectivity `sel`, the search pool size is `min(1000, ceil(k / sel * gamma))` (default `gamma=1.0`); candidates are then filtered in search order until `k` matches remain.
 
-**Pre-filtering (FAISS)** uses `faiss.IDSelectorBitmap` built from the attribute column and filter predicate.
+**Pre-filtering (FAISS)** uses `faiss.IDSelectorBitmap` built from the named attribute column and filter predicate (operators `>=`, `<=`, `>`, `<`, `=`, `!=`). pgvector stores multiple numeric FLOAT columns and emits `WHERE {attr} {op} {value}`.
 
-Index construction parameters are fixed across the sweep: HNSW uses `M=16`, `efConstruction=64`; IVF uses `nlist ≈ sqrt(|D|)` (auto when `clusters=0`). Only search parameters are swept (`efSearch` for HNSW, `nprobe`/`probes` for IVF).
+Index construction parameters are fixed across the sweep: HNSW uses `M=16`, `efConstruction=128`; IVF uses `nlist ≈ sqrt(|D|)` (auto when `clusters=0`). Only search parameters are swept (`efSearch` for HNSW, `nprobe`/`probes` for IVF; current starter grid `efSearch ∈ {40,60,80}`).
 
 ## Requirements
 
@@ -52,16 +52,22 @@ data/datasets/MoRe_{size}/
 ├── datasets/           # Train embeddings (movies, reviews)
 │   ├── movies_dataset_0.hdf5
 │   └── reviews_dataset_0.hdf5
-├── filters/            # Filter definitions and selectivities
+├── filters/            # Flex filter bank + selectivities
 │   ├── movies_filters_0.hdf5
 │   └── reviews_filters_0.hdf5
-├── queries/            # Query workloads per filter
+├── queries/            # Flex workloads (one filter per file)
 │   └── queries_flex_{type}_sim_0_{filter_id}.hdf5
+├── hard_queries/       # Per-query hard packs (optional; generate locally)
+│   ├── movies_hcbgen_match_pdf.hdf5
+│   └── reviews_hcbgen_match_pdf.hdf5
+├── superhard_queries/  # Per-query superhard packs (optional)
+│   ├── movies_hcbgen_superhard.hdf5
+│   └── reviews_hcbgen_superhard.hdf5
 └── stats/              # Filter statistics (GLS correlation, etc.)
     └── filter_stats_0_k2048.csv
 ```
 
-Supported sizes: `small`, `medium`, `large`.
+Supported sizes: `small`, `medium`, `large`. Flex queries ship with MoReVec; hard/superhard packs are generated on top of the large checkout (see `scripts/generate_hcbgen_hard_queries.py`, `scripts/generate_superhard_queries.py`, and pack READMEs under `hard_queries/` / `superhard_queries/`).
 
 MoReVec datasets: [Google Drive folder](https://drive.google.com/drive/folders/1AqAVI8ASROqrFCQdEMPB8RNzPwilijRp?usp=drive_link)
 
@@ -86,25 +92,46 @@ The FAISS image installs `faiss-cpu==1.12.0`, which provides `SearchParametersHN
 
 ## Running benchmarks
 
-**Arguments** (via `run.py`):
+**Arguments** (via `run.py` / Docker):
 - `--algorithm`: any plan name from the table above
 - `--dataset_size`: `small`, `medium`, or `large`
+- `--workload`: `flex` (default), `hard`, or `superhard`
+
+### Workload modes
+
+| `--workload` | Queries | Filters | `k` | Result root |
+|--------------|---------|---------|-----|-------------|
+| `flex` (**default**) | `queries/queries_flex_*` | one filter per `fid` | `{10,20,40}` | `results/MoRe_UPD_{size}_attidx_{0\|1}/fid{N}/...` |
+| `hard` | `hard_queries/{table}_hcbgen_match_pdf.hdf5` | **per-query** | `10` only | `results/MoRe_UPD_{size}_hard_{table}/10/...` |
+| `superhard` | `superhard_queries/{table}_hcbgen_superhard.hdf5` | **per-query** | `10` only | `results/MoRe_UPD_{size}_superhard_{table}/10/...` |
+
+No `--workload` flag ⇒ same as today's flex large-MoRe campaign.
 
 ### Orchestrator: `starter.py`
 
 `starter.py` generates algorithm config via `make_yaml.py` and runs the benchmark sweep:
 
 ```bash
-python starter.py [--dataset_size small|medium|large]
+# Flex (default) — FAISS plans, fid loop, k∈{10,20,40}
+python starter.py --dataset_size large
+
+# Hard or superhard packs — all 8 FAISS/pgvector plans, k=10
+python starter.py --dataset_size large --workload hard
+python starter.py --dataset_size large --workload superhard
+
+# Optional: restrict algorithms
+python starter.py --dataset_size large --workload hard --algorithms faiss-flat,pgvector_bf
 ```
 
-Edit the `algo` list in `starter.py` to choose which plans to run. The default sweep targets the **large** dataset and exercises the FAISS and pgvector plans listed in the file header comment.
+End-to-end hard+superhard campaign (Docker rebuild → BF smoke → 8-plan sweep → QO ×4), intended under `nohup`:
 
-Each run writes HDF5 results to:
+```bash
+mkdir -p logs/task1_hard_superhard
+nohup bash scripts/run_task1_hard_superhard_campaign.sh \
+  > logs/task1_hard_superhard/master_$(date +%Y%m%d_%H%M%S).log 2>&1 &
+```
 
-```
-results/MoRe_UPD_{dataset_size}_attidx_{0|1}/fid{filter_id}/{k}/{algorithm}/
-```
+See `NOTES_task1_hard_superhard.md` for status/log locations and acceptance notes.
 
 ### Config generation: `make_yaml.py`
 
@@ -114,7 +141,9 @@ results/MoRe_UPD_{dataset_size}_attidx_{0|1}/fid{filter_id}/{k}/{algorithm}/
 
 ## Query optimizer analysis
 
-`analysis/query_optimizer_analysis.py` is the main visualization and plan-selection tool for this branch. It:
+### Flex workloads
+
+`analysis/query_optimizer_analysis.py` is the plan-selection tool for the **flex** `fid` result tree. It:
 
 1. Builds a per-query results CSV from HDF5 benchmark outputs.
 2. Verifies brute-force plans (`faiss-flat`, `pgvector_bf`) achieve recall = 1.0.
@@ -122,7 +151,7 @@ results/MoRe_UPD_{dataset_size}_attidx_{0|1}/fid{filter_id}/{k}/{algorithm}/
 4. For each query, picks the best plan among tuned ANN methods and brute-force.
 5. Produces scatter plots (selectivity vs GLS correlation, colored by best plan), QPS–recall frontiers, in-system oracle speedup charts, and CSV summaries.
 
-**Run** (after benchmark results exist):
+**Run** (after flex benchmark results exist):
 
 ```bash
 cd analysis
@@ -144,9 +173,31 @@ python query_optimizer_analysis.py \
 | `system_oracle_speedup.csv`, `system_oracle_speedup.png` | Speedup from picking HNSW vs IVF per query |
 | `best_plan_scatter_*.png` | Selectivity vs GLS correlation, colored by winning plan |
 | `best_plan_by_selectivity_bin.png` | Plan distribution across selectivity bins |
-| `qps_recall_frontier.png` | QPS–recall curves with chosen hyperparameters marked |
+| `qps_recall_frontier_*.png` | QPS–recall curves with chosen hyperparameters marked |
 
-Re-run this script whenever new benchmark results (e.g. post-filter plans) are added.
+### Hard / superhard workloads
+
+`analysis/query_optimizer_hard_analysis.py` consumes
+`results/MoRe_UPD_{size}_{hard|superhard}_{movies|reviews}/` and joins per-query
+σ / Post_Hardness / exact GLS from the pack (plus optional ρ̂ CSV). It emits the
+same oracle CSVs/plots style as flex, plus **tertile-binned QPS–recall** frontiers.
+
+```bash
+python analysis/query_optimizer_hard_analysis.py --hardness hard --table movies
+python analysis/query_optimizer_hard_analysis.py --hardness superhard --table reviews
+# → analysis/plots/query_optimizer_{hard|superhard}_{movies|reviews}/
+```
+
+Optional ρ̂ cache (same GLS-CorE settings as flex large):
+
+```bash
+conda activate glscore
+python scripts/compute_gls_estimates_hard.py --hardness hard --tables movies reviews
+```
+
+Recall for hard packs uses cached **angular** filtered GT under
+`data/datasets/MoRe_large/stats/angular_gt_{hardness}_{table}_k10.npy` (pack
+neighbor lists were produced with L2; the runner uses angular).
 
 ### Per-query debugging: `run_query_analysis.py`
 
@@ -197,20 +248,29 @@ ANN-benchmark-HQ/
 │   │   ├── faiss_hnsw_post/    # config for hnsw(faiss)-post
 │   │   ├── faiss_ivf_post/     # config for faiss-ivf-post
 │   │   ├── faiss_flat/         # config for faiss-flat
-│   │   ├── pgvector/           # HNSW
+│   │   ├── pgvector/           # HNSW (+ multi-attr SQL helpers)
 │   │   ├── pgvector_ivf/       # IVF
 │   │   ├── pgvector_bf/        # brute force
+│   │   ├── pgvector_common.py  # shared multi-column table/WHERE helpers
 │   │   └── milvus/             # legacy
+│   ├── attrs.py                # attribute name → column maps
 │   ├── main.py, runner.py, results.py
-│   └── datasets.py             # MoRe dataset loading
+│   └── datasets.py             # MoRe flex + hard/superhard pack loading
 ├── analysis/
-│   ├── query_optimizer_analysis.py   # query plan selection & plots
-│   └── make_plots_*.py               # legacy figure scripts
+│   ├── query_optimizer_analysis.py        # flex QO
+│   ├── query_optimizer_hard_analysis.py   # hard/superhard QO + tertile frontiers
+│   └── make_plots_*.py
+├── scripts/
+│   ├── generate_hcbgen_hard_queries.py
+│   ├── generate_superhard_queries.py
+│   ├── compute_gls_estimates_hard.py
+│   └── run_task1_hard_superhard_campaign.sh
 ├── data/datasets/              # MoRe_small, MoRe_medium, MoRe_large
 ├── results/                    # HDF5 benchmark outputs
-├── make_yaml.py                # config generator
-├── starter.py                  # benchmark orchestrator
-├── run.py                      # single-algorithm entry point
+├── NOTES_task1_hard_superhard.md
+├── make_yaml.py
+├── starter.py                  # --workload flex|hard|superhard
+├── run.py
 └── requirements.txt
 ```
 
