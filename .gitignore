@@ -33,7 +33,9 @@ libmilvus_core.so
 
 results/*
 results_prev/*
-scripts/*
+
+# Keep generator / ETL helpers under scripts/ in git.
+# (Previously ignored via scripts/* — that dropped hard-query generators on clone.)
 
 # !results/*.png
 
