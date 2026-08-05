@@ -197,7 +197,11 @@ class FaissFlat(Faiss):
             D, I = self.index.search(v, n)
         else:
             search_params = faiss.SearchParameters()
-            search_params.sel = faiss.IDSelectorBitmap(_bitmap_from_fvalue(self, fvalue, X_attr))
+            # Keep the bitmap alive until the search completes: IDSelectorBitmap
+            # stores a raw pointer to the numpy buffer, so passing a temporary
+            # is a use-after-free that corrupts the filter mask.
+            bitmap = _bitmap_from_fvalue(self, fvalue, X_attr)
+            search_params.sel = faiss.IDSelectorBitmap(bitmap)
             D, I = self.index.search(v, n, params=search_params)
         return I[0]
 

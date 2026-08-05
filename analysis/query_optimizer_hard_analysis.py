@@ -111,7 +111,7 @@ def angular_gt_cache_path(root_data: Path, dataset_size: str, table: str, hardne
         root_data
         / f"MoRe_{dataset_size}"
         / "stats"
-        / f"angular_gt_{hardness}_{table}_k{k}.npz"
+        / f"angular_gt_{hardness}_{table}_k{k}.npy"
     )
 
 
@@ -355,6 +355,62 @@ def assign_tertiles(series: pd.Series) -> tuple[pd.Series, dict]:
     return labels, edges
 
 
+# Metric → (label, RGB base hue). Tertiles use light / mid / dark shades of that hue.
+METRIC_SPECS = [
+    ("post_hardness", "Post_Hardness", (0.75, 0.12, 0.12)),          # red
+    ("gls_correlation", "exact GLS", (0.12, 0.30, 0.72)),             # blue
+    ("gls_correlation_est", "estimated GLS (ρ̂)", (0.12, 0.55, 0.22)),  # green
+]
+
+# low → light, mid → medium, high → dark (lerp toward white / black)
+_TERTILE_SHADE = {
+    "low": 0.55,   # blend toward white
+    "mid": 0.0,    # base hue
+    "high": -0.45, # blend toward black (negative = darken)
+}
+
+
+def _shade_rgb(base: tuple[float, float, float], amount: float) -> tuple[float, float, float]:
+    """amount>0 lighten toward white; amount<0 darken toward black."""
+    r, g, b = base
+    if amount >= 0:
+        return (r + (1 - r) * amount, g + (1 - g) * amount, b + (1 - b) * amount)
+    a = -amount
+    return (r * (1 - a), g * (1 - a), b * (1 - a))
+
+
+def _algo_slug(algo: str) -> str:
+    return (
+        algo.replace("(", "_")
+        .replace(")", "")
+        .replace("-", "_")
+        .replace(" ", "_")
+    )
+
+
+def _hp_curve(adf: pd.DataFrame) -> pd.DataFrame:
+    return (
+        adf.groupby("hyperparam", dropna=False)
+        .agg(mean_recall=("recall", "mean"), mean_qps=("qps", "mean"))
+        .reset_index()
+        .sort_values("mean_recall")
+    )
+
+
+def _attach_tertile(df: pd.DataFrame, metric_col: str) -> tuple[pd.DataFrame, dict] | tuple[None, None]:
+    if metric_col not in df.columns or df[metric_col].isna().all():
+        return None, None
+    qmeta = (
+        df.groupby("query_id_num", as_index=False)[metric_col]
+        .first()
+        .dropna(subset=[metric_col])
+    )
+    labels, edges = assign_tertiles(qmeta[metric_col])
+    qmeta = qmeta.assign(tertile=labels.values)
+    out = df.merge(qmeta[["query_id_num", "tertile"]], on="query_id_num", how="inner")
+    return out, edges
+
+
 def plot_tertile_qps_recall(
     df: pd.DataFrame,
     metric_col: str,
@@ -363,90 +419,231 @@ def plot_tertile_qps_recall(
     recall_target: float = RECALL_TARGET,
     algos: list[str] | None = None,
 ):
-    """3-panel QPS–recall frontiers split by tertiles of ``metric_col``."""
-    if metric_col not in df.columns or df[metric_col].isna().all():
+    """Legacy 3-panel overview (all algos) by tertiles of one metric."""
+    tagged, edges = _attach_tertile(df, metric_col)
+    if tagged is None:
         print(f"Skipping tertile plot {output_path.name}: missing {metric_col}")
         return None
 
-    # Attach tertile from one row per query (use first algo present)
-    qmeta = (
-        df.groupby("query_id_num", as_index=False)[metric_col]
-        .first()
-        .dropna(subset=[metric_col])
-    )
-    labels, edges = assign_tertiles(qmeta[metric_col])
-    qmeta = qmeta.assign(tertile=labels.values)
-    df = df.merge(qmeta[["query_id_num", "tertile"]], on="query_id_num", how="inner")
-
     if algos is None:
-        algos = _present_algos(df, [a for a in FAISS_ALL_ALGOS if a in ANN_METHODS] + list(ANN_METHODS))
-    algos = _present_algos(df, algos)
+        algos = _present_algos(
+            tagged, [a for a in FAISS_ALL_ALGOS if a in ANN_METHODS] + list(ANN_METHODS)
+        )
+    algos = _present_algos(tagged, algos)
 
-    frontier_colors = {
-        "FAISS HNSW pre": "#2ecc71",
-        "FAISS HNSW post": "#27ae60",
-        "FAISS IVF pre": "#1a5276",
-        "FAISS IVF post": "#3498db",
-        "pgvector HNSW": "#4488FF",
-        "pgvector IVF": "#9b59b6",
+    # One base color per algorithm; tertiles = light / mid / dark shades.
+    algo_bases = {
+        "hnsw(faiss)": (0.18, 0.70, 0.40),
+        "hnsw(faiss)-post": (0.10, 0.50, 0.28),
+        "faiss-ivf": (0.10, 0.30, 0.55),
+        "faiss-ivf-post": (0.20, 0.50, 0.80),
+        "pgvector": (0.25, 0.45, 0.90),
+        "pgvector_ivf": (0.55, 0.30, 0.70),
+        "faiss-flat": (0.75, 0.15, 0.15),
+        "pgvector_bf": (0.55, 0.10, 0.10),
     }
 
-    fig, axes = plt.subplots(1, 3, figsize=(15, 4.5), sharey=True)
-    for ax, tertile in zip(axes, ["low", "mid", "high"]):
-        sub = df[df["tertile"] == tertile]
-        if sub.empty:
-            ax.set_title(f"{tertile} (empty)")
-            continue
-        sub_best = find_best_hyperparams(sub, recall_target, algos=algos)
-        # reuse panel helper via temporary single-axes path
-        for algo in algos:
-            if algo not in ANN_METHODS:
+    fig, ax = plt.subplots(figsize=(7.5, 5.5))
+    for algo in algos:
+        base = algo_bases.get(algo, (0.3, 0.3, 0.3))
+        for tertile in ["low", "mid", "high"]:
+            sub = tagged[(tagged["tertile"] == tertile) & (tagged["algorithm"] == algo)]
+            if sub.empty:
                 continue
-            label = plan_label(algo)
-            color = frontier_colors.get(label, "#333333")
-            adf = sub[sub["algorithm"] == algo]
-            if adf.empty:
-                continue
-            curve = (
-                adf.groupby("hyperparam", dropna=False)
-                .agg(mean_recall=("recall", "mean"), mean_qps=("qps", "mean"))
-                .reset_index()
-                .sort_values("mean_recall")
-            )
+            curve = _hp_curve(sub)
+            color = _shade_rgb(base, _TERTILE_SHADE[tertile])
             ax.plot(
                 curve["mean_recall"],
                 curve["mean_qps"],
                 "-o",
                 markersize=3,
-                label=label,
                 color=color,
-                alpha=0.85,
+                alpha=0.9,
+                label=f"{plan_label(algo)} · {tertile}",
             )
-            if not sub_best.empty and algo in set(sub_best["algorithm"]):
-                best = sub_best[sub_best["algorithm"] == algo].iloc[0]
-                ax.scatter(
-                    [best["mean_recall"]],
-                    [best["mean_qps"]],
-                    s=100,
-                    marker="*",
-                    color=color,
-                    zorder=5,
-                )
-        ax.axvline(recall_target, color="gray", linestyle="--", alpha=0.6)
-        ax.set_xlabel("Mean recall")
-        ax.set_title(f"{tertile} {metric_label}")
-        ax.set_yscale("log")
-        ax.grid(True, alpha=0.3)
-        if ax is axes[0]:
-            ax.set_ylabel("Mean QPS")
-            ax.legend(fontsize=7)
-    fig.suptitle(f"QPS–recall by {metric_label} tertiles")
+    ax.axvline(recall_target, color="gray", linestyle="--", alpha=0.6)
+    ax.set_xlabel("Mean recall")
+    ax.set_ylabel("Mean QPS")
+    ax.set_yscale("log")
+    ax.set_title(f"QPS–recall by {metric_label} tertiles (shade: low→light, high→dark)")
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=7, ncol=2, loc="best")
     fig.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
     print(f"Saved tertile frontier: {output_path}")
     return edges
+
+
+def _draw_algo_tertile_panel(
+    ax,
+    algo: str,
+    metric_frames: list,
+    recall_target: float,
+) -> bool:
+    """Draw metric×tertile QPS–recall curves for one algorithm onto ``ax``."""
+    any_curve = False
+    for _col, label, hue, tagged, _edges in metric_frames:
+        adf_all = tagged[tagged["algorithm"] == algo]
+        if adf_all.empty:
+            continue
+        for tertile in ["low", "mid", "high"]:
+            sub = adf_all[adf_all["tertile"] == tertile]
+            if sub.empty:
+                continue
+            curve = _hp_curve(sub)
+            if curve.empty:
+                continue
+            color = _shade_rgb(hue, _TERTILE_SHADE[tertile])
+            ax.plot(
+                curve["mean_recall"],
+                curve["mean_qps"],
+                "-o",
+                markersize=3.5,
+                color=color,
+                linewidth=1.6,
+                alpha=0.95,
+                label=f"{label} · {tertile}",
+            )
+            any_curve = True
+            if algo in ANN_METHODS:
+                sub_best = find_best_hyperparams(sub, recall_target, algos=[algo])
+                if not sub_best.empty:
+                    best = sub_best.iloc[0]
+                    ax.scatter(
+                        [best["mean_recall"]],
+                        [best["mean_qps"]],
+                        s=70,
+                        marker="*",
+                        color=color,
+                        zorder=5,
+                        edgecolors="white",
+                        linewidths=0.3,
+                    )
+            else:
+                ax.scatter(
+                    [curve["mean_recall"].iloc[-1]],
+                    [curve["mean_qps"].iloc[-1]],
+                    s=55,
+                    marker="s",
+                    color=color,
+                    zorder=5,
+                    edgecolors="white",
+                    linewidths=0.3,
+                )
+    ax.axvline(recall_target, color="gray", linestyle="--", alpha=0.55)
+    ax.set_xlabel("Mean recall")
+    ax.set_ylabel("Mean QPS")
+    ax.set_yscale("log")
+    ax.grid(True, alpha=0.3)
+    return any_curve
+
+
+def plot_tertile_qps_recall_per_algorithm(
+    df: pd.DataFrame,
+    output_dir: Path,
+    recall_target: float = RECALL_TARGET,
+    algos: list[str] | None = None,
+) -> dict[str, dict]:
+    """One multi-subplot figure: subplot per algorithm.
+
+    Within each subplot:
+      - Post_Hardness  → shades of red   (low light → high dark)
+      - exact GLS      → shades of blue
+      - estimated GLS  → shades of green
+
+    Writes:
+      ``output_dir / qps_recall_tertiles_by_algo.png``
+      and per-algo copies under ``qps_recall_tertiles_per_algo/``.
+    """
+    if algos is None:
+        candidate = (
+            [a for a in FAISS_ALL_ALGOS if a in ANN_METHODS or a in BF_METHODS]
+            + list(ANN_METHODS)
+            + list(BF_METHODS)
+        )
+        seen: set[str] = set()
+        algos = []
+        for a in candidate:
+            if a not in seen:
+                seen.add(a)
+                algos.append(a)
+    algos = _present_algos(df, algos)
+
+    metric_frames: list[tuple[str, str, tuple[float, float, float], pd.DataFrame, dict]] = []
+    edges_out: dict[str, dict] = {}
+    for col, label, hue in METRIC_SPECS:
+        tagged, edges = _attach_tertile(df, col)
+        if tagged is None:
+            continue
+        metric_frames.append((col, label, hue, tagged, edges))
+        edges_out[col] = edges
+
+    if not metric_frames or not algos:
+        print("No metrics/algorithms available for per-algorithm tertile plots")
+        return edges_out
+
+    n = len(algos)
+    ncols = 2 if n > 1 else 1
+    nrows = int(np.ceil(n / ncols))
+    fig, axes = plt.subplots(
+        nrows, ncols, figsize=(6.2 * ncols, 4.6 * nrows), sharex=False, sharey=False
+    )
+    axes_flat = np.atleast_1d(axes).ravel()
+
+    legend_handles = None
+    legend_labels = None
+    for ax, algo in zip(axes_flat, algos):
+        _draw_algo_tertile_panel(ax, algo, metric_frames, recall_target)
+        ax.set_title(plan_label(algo), fontsize=11)
+        if legend_handles is None:
+            legend_handles, legend_labels = ax.get_legend_handles_labels()
+
+    for ax in axes_flat[len(algos) :]:
+        ax.set_visible(False)
+
+    fig.suptitle(
+        "QPS–recall by metric tertiles per algorithm\n"
+        "red = Post_Hardness · blue = exact GLS · green = estimated GLS "
+        "(shade: low→light, mid, high→dark)",
+        fontsize=12,
+    )
+    if legend_handles:
+        fig.legend(
+            legend_handles,
+            legend_labels,
+            loc="lower center",
+            ncol=3,
+            fontsize=8,
+            frameon=True,
+            bbox_to_anchor=(0.5, -0.02),
+        )
+    fig.tight_layout(rect=[0, 0.06, 1, 0.95])
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    combo_path = output_dir / "qps_recall_tertiles_by_algo.png"
+    fig.savefig(combo_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved multi-subplot tertile frontier: {combo_path}")
+
+    out_dir = output_dir / "qps_recall_tertiles_per_algo"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for algo in algos:
+        mono, mono_ax = plt.subplots(figsize=(6.5, 5.0))
+        _draw_algo_tertile_panel(mono_ax, algo, metric_frames, recall_target)
+        mono_ax.set_title(
+            f"{plan_label(algo)} — QPS–recall by metric tertiles\n"
+            "red=Post_H · blue=GLS exact · green=GLS est (shade=low→high)"
+        )
+        mono_ax.legend(fontsize=8, loc="best")
+        mono.tight_layout()
+        path = out_dir / f"{_algo_slug(algo)}.png"
+        mono.savefig(path, dpi=200, bbox_inches="tight")
+        plt.close(mono)
+        print(f"Saved per-algo tertile frontier: {path}")
+
+    return edges_out
 
 
 def run_analysis(
@@ -472,6 +669,17 @@ def run_analysis(
     df.to_csv(output_dir / "all_query_results.csv", index=False)
     print(f"Saved {output_dir / 'all_query_results.csv'} ({len(df)} rows)")
 
+    # Estimated-GLS variant in the exact layout qo_prototype.py expects:
+    # a sibling gls_est/all_query_results.csv whose gls_correlation column
+    # holds rho-hat instead of the exact value.
+    if "gls_correlation_est" in df.columns and df["gls_correlation_est"].notna().any():
+        est_dir = output_dir / "gls_est"
+        est_dir.mkdir(parents=True, exist_ok=True)
+        df_est = df.copy()
+        df_est["gls_correlation"] = df_est["gls_correlation_est"]
+        df_est.to_csv(est_dir / "all_query_results.csv", index=False)
+        print(f"Saved {est_dir / 'all_query_results.csv'} ({len(df_est)} rows)")
+
     bf_summary = verify_brute_force(df)
     bf_summary.to_csv(output_dir / "brute_force_recall_check.csv", index=False)
     print(bf_summary.to_string(index=False))
@@ -491,7 +699,8 @@ def run_analysis(
     plot_qps_recall_frontier(df, best_hp, output_dir, recall_target)
     plot_faiss_all_qps_recall_frontier(df, best_hp, output_dir, recall_target)
 
-    # Tertile frontiers
+    # Tertile frontiers — per-metric overview (algo shades) + per-algorithm
+    # (metric hue × tertile shade) plots.
     edges_post = plot_tertile_qps_recall(
         df,
         "post_hardness",
@@ -537,14 +746,36 @@ def run_analysis(
             else "Deferred estimated-GLS tertiles: no est path"
         )
 
+    per_algo_edges = plot_tertile_qps_recall_per_algorithm(
+        df, output_dir, recall_target
+    )
+    # Prefer edges from the per-algo pass when present (same splits).
+    for col, edges in per_algo_edges.items():
+        name = {
+            "post_hardness": "tertile_edges_post_hardness.csv",
+            "gls_correlation": "tertile_edges_gls_exact.csv",
+            "gls_correlation_est": "tertile_edges_gls_est.csv",
+        }.get(col)
+        if name:
+            pd.DataFrame([edges]).to_csv(output_dir / name, index=False)
+
     required = [
         "all_query_results.csv",
         "best_hyperparameters.csv",
         "best_plan_per_query.csv",
         "qps_recall_by_post_hardness_tertiles.png",
         "qps_recall_by_gls_exact_tertiles.png",
+        "qps_recall_tertiles_by_algo.png",
+        "qps_recall_tertiles_per_algo",
     ]
-    missing = [r for r in required if not (output_dir / r).is_file()]
+    missing = []
+    for r in required:
+        p = output_dir / r
+        if r == "qps_recall_tertiles_per_algo":
+            if not p.is_dir() or not any(p.glob("*.png")):
+                missing.append(r)
+        elif not p.is_file():
+            missing.append(r)
     return {
         "ok": len(missing) == 0,
         "missing": missing,

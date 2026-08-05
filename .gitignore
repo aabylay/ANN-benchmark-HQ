@@ -27,6 +27,8 @@ analysis/plots/
 analysis/print_selectivities.py
 analysis/recalculate_recall_specific_params.py
 
+backup_corrupted_results/
+
 delete_old.py
 delete_old2.py
 libknowhere.so

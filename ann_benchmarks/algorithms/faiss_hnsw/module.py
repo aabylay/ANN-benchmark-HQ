@@ -41,7 +41,11 @@ class FaissHNSW(Faiss):
             D, I = self.index.search((np.expand_dims(v, axis=0).astype(np.float32)), n)
         else:
             search_params = faiss.SearchParametersHNSW()
-            sel = faiss.IDSelectorBitmap(_bitmap_from_fvalue(self, fvalue, X_attr))
+            # Keep the bitmap alive until the search completes: IDSelectorBitmap
+            # stores a raw pointer to the numpy buffer, so passing a temporary
+            # is a use-after-free that corrupts the filter mask.
+            bitmap = _bitmap_from_fvalue(self, fvalue, X_attr)
+            sel = faiss.IDSelectorBitmap(bitmap)
             search_params.efSearch = self.index.hnsw.efSearch
             search_params.sel = sel
             search_params.check_relative_distance = self.index.hnsw.check_relative_distance

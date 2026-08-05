@@ -94,7 +94,9 @@ PAIR_KEYS = ["query_type", "query_id_num", "filter_id", "k"]
 
 # wide enough to expose the Pareto: in v2 ANN is far cheaper than BF, so small
 # gamma never displaces BF -- only large gamma trades latency for recall safety.
-GAMMA_SWEEP = [1.0, 1.2, 1.5, 2.0, 3.0, 5.0, 10.0, 20.0, 50.0, 100.0]
+# Dense log-spaced grid: gamma is scored post-hoc from cached records (no model
+# refit), so extra points are cheap and smooth out the frontier.
+GAMMA_SWEEP = [round(float(g), 2) for g in np.geomspace(1.0, 100.0, 31)]
 
 
 # --------------------------------------------------------------------------- #
@@ -582,18 +584,25 @@ def optimizer_metrics(records, gamma, lam, bump=False):
         chosen.append(plan)
     fail = recall < RECALL_TARGET
     hnsw_rec = np.array([rec["hnsw"][reck] for rec in records])
+    bf_rec = np.array([rec["cands"]["BF"]["rec"] for rec in records])
     regret = realised / np.clip(oracle, 1e-9, None)
     tot_s = realised.sum() / 1000.0
     return {
         "gamma": gamma, "lam": lam, "bump": int(bump), "n": n,
         "avg_recall": float(recall.mean()),
         "recall_fail_rate": float(fail.mean()),
+        # robustness: tail of the realised-recall distribution
+        "recall_p10": float(np.percentile(recall, 10)),
+        "bad_recall_rate_090": float((recall < 0.90).mean()),
+        "bad_recall_rate_080": float((recall < 0.80).mean()),
+        "bad_recall_rate_050": float((recall < 0.50).mean()),
         "qps": float(n / tot_s),
         "chosen_is_oracle_pct": float(100 * is_oracle.mean()),
         "mean_regret": float(regret.mean()), "median_regret": float(np.median(regret)),
         "total_realised_ms": float(realised.sum()), "total_oracle_ms": float(oracle.sum()),
         "total_bf_ms": float(bf.sum()), "total_hnsw_ms": float(hnsw.sum()),
         "bf_qps": float(n / (bf.sum() / 1000.0)),
+        "bf_avg_recall": float(bf_rec.mean()),
         "oracle_qps": float(n / (oracle.sum() / 1000.0)),
         "hnsw_qps": float(n / (hnsw.sum() / 1000.0)),
         "hnsw_avg_recall": float(hnsw_rec.mean()),
@@ -649,15 +658,29 @@ def report_optimizer(m, label):
           f"safety_bump={bool(m['bump'])}) ---")
     print(f"  AVERAGE recall of chosen plans : {m['avg_recall']:.4f}   "
           f"(recall<0.95 on {100*m['recall_fail_rate']:.1f}% of pairs)")
+    print(f"  ROBUSTNESS (recall tail)       : p10={m['recall_p10']:.3f}   "
+          f"<0.9 on {100*m['bad_recall_rate_090']:.1f}%, "
+          f"<0.8 on {100*m['bad_recall_rate_080']:.1f}%, "
+          f"<0.5 on {100*m['bad_recall_rate_050']:.1f}% of pairs")
     print(f"  THROUGHPUT                     : {m['qps']:.1f} QPS  "
           f"(BF {m['bf_qps']:.1f}, oracle {m['oracle_qps']:.1f}, HNSW-pre {m['hnsw_qps']:.1f})")
     print(f"  chosen == oracle plan          : {m['chosen_is_oracle_pct']:.1f}%")
     print(f"  mean regret (realised/oracle)  : {m['mean_regret']:.3f}   median {m['median_regret']:.3f}")
-    print(f"  vs always-BF                   : {m['speedup_vs_bf']:.2f}x throughput  (BF recall 1.000)")
+    print(f"  vs always-BF                   : {m['speedup_vs_bf']:.2f}x throughput  "
+          f"(BF measured recall {m['bf_avg_recall']:.3f})")
     print(f"  vs always-HNSW-pre             : {m['speedup_vs_hnsw']:.2f}x throughput  "
           f"(HNSW-pre avg recall {m['hnsw_avg_recall']:.4f})")
     mix = pd.Series(m["chosen"]).value_counts()
     print("  chosen-plan mix: " + ", ".join(f"{p}={c}" for p, c in mix.items()))
+
+
+def _label_rows(pareto, max_labels=10):
+    """Indices of ~max_labels evenly spaced sweep points (incl. endpoints)."""
+    n = len(pareto)
+    step = max(1, int(np.ceil((n - 1) / max(1, max_labels - 1))))
+    idx = set(range(0, n, step))
+    idx.add(n - 1)
+    return idx
 
 
 def plot_pareto(pareto, out_png, label):
@@ -665,8 +688,11 @@ def plot_pareto(pareto, out_png, label):
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     fig, ax = plt.subplots(figsize=(8, 5.5))
-    ax.plot(pareto["avg_recall"], pareto["qps"], "o-", color="#5aa0ff")
-    for _, r in pareto.iterrows():
+    ax.plot(pareto["avg_recall"], pareto["qps"], "o-", color="#5aa0ff", ms=4)
+    labelled = _label_rows(pareto)
+    for i, (_, r) in enumerate(pareto.iterrows()):
+        if i not in labelled:
+            continue
         ax.annotate(f"g={r['gamma']:g}", (r["avg_recall"], r["qps"]),
                     textcoords="offset points", xytext=(6, 4), fontsize=8)
     ax.axvline(RECALL_TARGET, color="#e2585f", ls="--", lw=1, alpha=0.7,
@@ -697,10 +723,11 @@ def plot_benefits(records, ops, pareto, out_png, label):
     hnsw_qps = n / (sum(r["hnsw"]["rt"] for r in records) / 1000.0)
     oracle_rec = float(np.mean([r["oracle_recall"] for r in records]))
     hnsw_rec = float(np.mean([r["hnsw"]["rec"] for r in records]))
+    bf_rec = float(np.mean([r["cands"]["BF"]["rec"] for r in records]))
     d, lb = ops["default"], ops["+lambda+bump"]
 
     bars = [  # (label, qps, avg_recall, color)
-        ("always-BF", bf_qps, 1.0, "#e2585f"),
+        ("always-BF", bf_qps, bf_rec, "#e2585f"),
         ("oracle", oracle_qps, oracle_rec, "#39c07a"),
         ("always\nHNSW-pre", hnsw_qps, hnsw_rec, "#e6a23c"),
         (f"optimizer\n(g={d['gamma']:g})", d["qps"], d["avg_recall"], "#5aa0ff"),
@@ -730,13 +757,16 @@ def plot_benefits(records, ops, pareto, out_png, label):
              bbox=dict(boxstyle="round", fc="#f4f7ff", ec="#c7d6f0"))
 
     # Panel B -- throughput vs average-recall frontier + reference points
-    ax2.plot(pareto["avg_recall"], pareto["qps"], "o-", color="#5aa0ff",
+    ax2.plot(pareto["avg_recall"], pareto["qps"], "o-", color="#5aa0ff", ms=4,
              label="optimizer (gamma-sweep)", zorder=3)
-    for _, r in pareto.iterrows():
+    labelled = _label_rows(pareto)
+    for i, (_, r) in enumerate(pareto.iterrows()):
+        if i not in labelled:
+            continue
         ax2.annotate(f"g={r['gamma']:g}", (r["avg_recall"], r["qps"]),
                      textcoords="offset points", xytext=(5, 3), fontsize=7)
-    ax2.scatter([1.0], [bf_qps], marker="s", s=110, color="#e2585f",
-                label="always-BF (recall 1.0)", zorder=4)
+    ax2.scatter([bf_rec], [bf_qps], marker="s", s=110, color="#e2585f",
+                label=f"always-BF (recall {bf_rec:.3f})", zorder=4)
     ax2.scatter([oracle_rec], [oracle_qps], marker="D", s=110, color="#39c07a",
                 label="oracle", zorder=4)
     ax2.scatter([hnsw_rec], [hnsw_qps], marker="^", s=110, color="#e6a23c",
@@ -757,6 +787,67 @@ def plot_benefits(records, ops, pareto, out_png, label):
     print(f"  saved benefits plot -> {out_png}")
 
 
+ROBUSTNESS_THRESHOLDS = [0.95, 0.90, 0.80, 0.50]
+
+
+def plot_robustness(records, ops, pareto, out_png, label):
+    """Robustness view: how bad do the recall misses get?
+
+    Panel A: CDF of realised recall for the optimizer operating points and the
+    always-HNSW-pre / always-BF / oracle baselines. A curve hugging the bottom-
+    right corner is robust; mass to the left of a threshold line is the share
+    of queries with recall below it.
+    Panel B: share of pairs below each recall threshold across the gamma sweep.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    curves = [
+        ("optimizer (default)", ops["default"]["recall"], "#5aa0ff"),
+        ("optimizer (+lam+bump)", ops["+lambda+bump"]["recall"], "#b07ad6"),
+        ("always-HNSW-pre", np.array([r["hnsw"]["rec"] for r in records]), "#e6a23c"),
+        ("always-BF", np.array([r["cands"]["BF"]["rec"] for r in records]), "#e2585f"),
+        ("oracle", np.array([r["oracle_recall"] for r in records]), "#39c07a"),
+    ]
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+
+    for name, rec, color in curves:
+        xs = np.sort(rec)
+        cdf = np.arange(1, len(xs) + 1) / len(xs)
+        ax1.step(xs, cdf, where="post", color=color, lw=2,
+                 label=f"{name} (mean {rec.mean():.3f})")
+    for thr in ROBUSTNESS_THRESHOLDS:
+        ax1.axvline(thr, color="#888", ls="--", lw=0.8, alpha=0.6)
+        ax1.text(thr, 1.02, f"{thr:g}", ha="center", fontsize=8, color="#666")
+    ax1.set_xlabel("Realised recall of chosen plan")
+    ax1.set_ylabel("CDF (share of pairs with recall <= x)")
+    ax1.set_xlim(0, 1.02)
+    ax1.set_ylim(0, 1.05)
+    ax1.grid(True, alpha=0.3)
+    ax1.legend(fontsize=9, loc="upper left")
+    ax1.set_title(f"Realised-recall CDF over {len(records)} pairs -- {label}")
+
+    thr_cols = {0.95: "recall_fail_rate", 0.90: "bad_recall_rate_090",
+                0.80: "bad_recall_rate_080", 0.50: "bad_recall_rate_050"}
+    shades = {0.95: "#9ecae1", 0.90: "#6baed6", 0.80: "#3182bd", 0.50: "#08519c"}
+    for thr in ROBUSTNESS_THRESHOLDS:
+        ax2.plot(pareto["gamma"], 100 * pareto[thr_cols[thr]], "o-",
+                 color=shades[thr], label=f"recall < {thr:g}")
+    ax2.set_xscale("log")
+    ax2.set_xlabel("gamma (index margin, log)")
+    ax2.set_ylabel("Share of pairs with bad recall [%]")
+    ax2.grid(True, alpha=0.3)
+    ax2.legend(fontsize=9)
+    ax2.set_title(f"Bad-recall share vs gamma -- {label}")
+
+    fig.tight_layout()
+    fig.savefig(out_png, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  saved robustness plot -> {out_png}")
+
+
 def plot_decision_scatter(records, chosen, feat, out_png, label, gamma):
     """(selectivity, rho) scatter coloured by the LOGICAL plan chosen, split into
     optimizer (top) vs ground-truth oracle (bottom) x movies vs reviews. Mirrors
@@ -770,8 +861,10 @@ def plot_decision_scatter(records, chosen, feat, out_png, label, gamma):
          "query_type": r["pair"][0], "optimizer": ch, "oracle": r["oracle_plan"]}
         for r, ch in zip(records, chosen)])
 
-    fig, axes = plt.subplots(2, 2, figsize=(15, 11), sharex=True, sharey=True)
-    for j, qt in enumerate(["movies", "reviews"]):
+    datasets = [qt for qt in ["movies", "reviews"] if (d["query_type"] == qt).any()]
+    fig, axes = plt.subplots(2, len(datasets), figsize=(7.5 * len(datasets), 11),
+                             sharex=True, sharey=True, squeeze=False)
+    for j, qt in enumerate(datasets):
         sub = d[d["query_type"] == qt]
         for i, key in enumerate(["optimizer", "oracle"]):
             ax = axes[i][j]
@@ -839,7 +932,9 @@ def run_one(path, gls_label, out, gamma, lam, min_leaf):
     for name, m in ops.items():
         report_optimizer(m, f"{gls_label} / {name}")
     knob_rows = [{"operating_point": name, **{k: m[k] for k in (
-        "gamma", "lam", "bump", "recall_fail_rate", "chosen_is_oracle_pct",
+        "gamma", "lam", "bump", "recall_fail_rate", "recall_p10",
+        "bad_recall_rate_090", "bad_recall_rate_080", "bad_recall_rate_050",
+        "chosen_is_oracle_pct",
         "mean_regret", "total_realised_ms", "speedup_vs_bf", "speedup_vs_hnsw")}}
         for name, m in ops.items()]
     pd.DataFrame(knob_rows).to_csv(out / f"operating_points_{gls_label}.csv", index=False)
@@ -878,6 +973,8 @@ def run_one(path, gls_label, out, gamma, lam, min_leaf):
     # gamma-sweep Pareto (lambda=0, no bump)
     pareto = pd.DataFrame([{k: mm[k] for k in (
         "gamma", "lam", "bump", "avg_recall", "qps", "recall_fail_rate",
+        "recall_p10", "bad_recall_rate_090", "bad_recall_rate_080",
+        "bad_recall_rate_050",
         "chosen_is_oracle_pct", "mean_regret", "median_regret", "total_realised_ms",
         "total_oracle_ms", "total_bf_ms", "total_hnsw_ms", "speedup_vs_bf",
         "speedup_vs_hnsw")}
@@ -894,6 +991,7 @@ def run_one(path, gls_label, out, gamma, lam, min_leaf):
             "mean_regret": lambda x: f"{x:.3f}"}))
     plot_pareto(pareto, out / f"gamma_pareto_{gls_label}.png", gls_label)
     plot_benefits(records, ops, pareto, out / f"benefits_{gls_label}.png", gls_label)
+    plot_robustness(records, ops, pareto, out / f"robustness_{gls_label}.png", gls_label)
     return ops["default"]
 
 
