@@ -5,7 +5,13 @@ from make_yaml import make_yaml
 # HNSW efSearch sweep (finer grid for Direction 4.5: separate model error from
 # grid-coarseness). starter.py regenerates each HNSW config.yml from this list
 # via make_yaml(), so this is the single source of truth for the efSearch grid.
-ef_s_list = [40, 60, 80]
+# 17 points, matching the large IVF probe grid in cardinality/coverage so HNSW
+# optimal-plan figures get comparable HP resolution. Construction stays fixed
+# (M=16, efConstruction=128).
+ef_s_list = [
+    10, 20, 40, 60, 80, 100, 120, 140, 160, 180, 200,
+    250, 300, 400, 500, 600, 800,
+]
 
 # Full FANNS plan set used for hard/superhard packs.
 HARD_ALGOS = [

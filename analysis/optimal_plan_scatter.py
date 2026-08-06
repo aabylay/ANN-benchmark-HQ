@@ -546,8 +546,12 @@ def main():
     )
     parser.add_argument(
         "--gls-est-results-csv",
-        default="analysis/plots/query_optimizer/gls_est/all_query_results.csv",
-        help="Prebuilt results CSV with estimated GLS correlation",
+        default="",
+        help="Optional prebuilt results CSV with estimated GLS correlation. "
+        "Empty (default) => derive from the gls_correlation_est column of "
+        "--results-csv when present, else attach from --gls-est-stats. Keeps "
+        "hard-pack invocations from accidentally pulling the flex "
+        "analysis/plots/query_optimizer/gls_est/ tree.",
     )
     parser.add_argument("--dataset-size", default="large")
     parser.add_argument(
@@ -608,21 +612,21 @@ def main():
     gls_est_output_dir = root / args.gls_est_output_dir
 
     # --- exact GLS ---
-    df_exact = load_or_build_df(
+    df_exact_raw = load_or_build_df(
         results_csv,
         results_dir,
         root_data,
         args.dataset_size,
         exact_gls_stats,
     )
-    if df_exact.empty:
+    if df_exact_raw.empty:
         print("No results found!")
         return
 
     k_filter = None if args.k == 0 else args.k
     print(f"Preparing plans (k={k_filter if k_filter is not None else 'all'}, dedupe runs)...")
-    n_before = len(df_exact)
-    df_exact = prepare_plans_df(df_exact, k=k_filter)
+    n_before = len(df_exact_raw)
+    df_exact = prepare_plans_df(df_exact_raw, k=k_filter)
     print(f"  {n_before} -> {len(df_exact)} rows")
     if df_exact.empty:
         print(f"No rows left after filtering k={k_filter}")
@@ -647,20 +651,33 @@ def main():
     )
 
     # --- estimated GLS ---
+    # Priority: explicit est CSV > gls_correlation_est column in the exact CSV
+    # (hard/superhard packs carry rho-hat inline) > flex est-stats attach.
+    has_est_col = (
+        "gls_correlation_est" in df_exact_raw.columns
+        and df_exact_raw["gls_correlation_est"].notna().any()
+    )
     if gls_est_csv is not None and gls_est_csv.is_file():
         print(f"\nLoading estimated-GLS results from {gls_est_csv}")
         df_est = pd.read_csv(gls_est_csv)
+    elif has_est_col:
+        print("\nDeriving estimated-GLS results from gls_correlation_est column")
+        df_est = df_exact_raw.copy()
+        df_est["gls_correlation"] = df_est["gls_correlation_est"]
     elif gls_est_stats.is_file():
         print(f"\nAttaching estimated GLS from {gls_est_stats}")
-        drop_cols = [c for c in ("gls_correlation", "estimator") if c in df_exact.columns]
+        drop_cols = [c for c in ("gls_correlation", "estimator") if c in df_exact_raw.columns]
         df_est = attach_gls_correlation(
-            df_exact.drop(columns=drop_cols),
+            df_exact_raw.drop(columns=drop_cols),
             gls_est_stats,
             root_data,
             args.dataset_size,
         )
     else:
-        print(f"\nSkipping estimated-GLS plots: neither {gls_est_csv} nor {gls_est_stats} found")
+        print(
+            f"\nSkipping estimated-GLS plots: no est CSV, no gls_correlation_est "
+            f"column, and {gls_est_stats} not found"
+        )
         return
 
     if "gls_correlation" not in df_est.columns:

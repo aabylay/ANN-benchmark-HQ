@@ -25,7 +25,7 @@ The current branch (`fannsqo`) focuses on **query plan selection**: comparing pr
 
 **Pre-filtering (FAISS)** uses `faiss.IDSelectorBitmap` built from the named attribute column and filter predicate (operators `>=`, `<=`, `>`, `<`, `=`, `!=`). pgvector stores multiple numeric FLOAT columns and emits `WHERE {attr} {op} {value}`.
 
-Index construction parameters are fixed across the sweep: HNSW uses `M=16`, `efConstruction=128`; IVF uses `nlist ≈ sqrt(|D|)` (auto when `clusters=0`). Only search parameters are swept (`efSearch` for HNSW, `nprobe`/`probes` for IVF; current starter grid `efSearch ∈ {40,60,80}`).
+Index construction parameters are fixed across the sweep: HNSW uses `M=16`, `efConstruction=128`; IVF uses `nlist ≈ sqrt(|D|)` (auto when `clusters=0`). Only search parameters are swept (`efSearch` for HNSW, `nprobe`/`probes` for IVF; current starter grid `efSearch ∈ {10, 20, 40, 60, 80, 100, 120, 140, 160, 180, 200, 250, 300, 400, 500, 600, 800}` — 17 points, comparable in density to the 18-point large IVF probe grid).
 
 ## Requirements
 
@@ -123,7 +123,7 @@ python starter.py --dataset_size large --workload superhard
 python starter.py --dataset_size large --workload hard --algorithms faiss-flat,pgvector_bf
 ```
 
-End-to-end hard+superhard campaign (Docker rebuild → BF smoke → 8-plan sweep → QO ×4), intended under `nohup`:
+End-to-end hard+superhard campaign (Docker rebuild → BF smoke → 8-plan sweep → QO ×4 → optimal-plan scatters ×4; add `--with-learned-qo` for the qo_prototype stage), intended under `nohup`:
 
 ```bash
 mkdir -p logs/task1_hard_superhard
@@ -194,6 +194,39 @@ Optional ρ̂ cache (same GLS-CorE settings as flex large):
 conda activate glscore
 python scripts/compute_gls_estimates_hard.py --hardness hard --tables movies reviews
 ```
+
+**Optimal-plan scatters.** After the QO analysis, the campaign runs
+`analysis/optimal_plan_scatter.py` for each `(hardness, table)`: per query, the
+best latency `t_b` is the fastest plan with recall ≥ 0.95, and an (algo, HP) is
+near-optimal when `recall ≥ 0.95` and `runtime ≤ t_b·(1+eps)` (default
+`eps = 0.1`). One figure per algorithm, one subplot per search HP, axes =
+selectivity × GLS. Exact-GLS figures go to `…/optimal/`; when ρ̂ is available
+(the `gls_est/all_query_results.csv` twin or the `gls_correlation_est` column)
+a parallel tree is written to `…/optimal/gls_est/`, otherwise the est pass is
+skipped with a log line. Manual invocation:
+
+```bash
+python analysis/optimal_plan_scatter.py \
+  --results-csv analysis/plots/query_optimizer_hard_movies/all_query_results.csv \
+  --gls-est-results-csv analysis/plots/query_optimizer_hard_movies/gls_est/all_query_results.csv \
+  --k 10 --eps 0.1 \
+  --output-dir analysis/plots/query_optimizer_hard_movies/optimal \
+  --gls-est-output-dir analysis/plots/query_optimizer_hard_movies/optimal/gls_est
+```
+
+**Learned QO prototype** (`analysis/qo_prototype.py`, campaign flag
+`--with-learned-qo`) evaluates the per-query plan+HP predictor on the same
+CSVs → `analysis/plots/qo_prototype_{hardness}_{table}/`. Per-plan HP grids
+are derived from the swept hyperparams in the results CSV (the hardcoded
+flex-era grids are only a fallback). The `always-HNSW-pre (tuned)` /
+`always-IVF-pre (tuned)` baselines run each plan per query at the lowest swept
+HP reaching recall ≥ 0.95 (max swept HP if none does). The oracle point is,
+per query, the fastest plan among those reaching the recall target, each ANN
+plan at its cheapest swept HP achieving it, with BF always a candidate
+(recall 1.0). Note the evaluation does **not** charge optimizer decision
+(model-inference) time — realised latency is only the measured runtime of the
+chosen plan — so in the full-BF limit the gamma-sweep endpoint coincides
+exactly with the always-BF point.
 
 Recall for hard packs uses cached **angular** filtered GT under
 `data/datasets/MoRe_large/stats/angular_gt_{hardness}_{table}_k10.npy` (pack

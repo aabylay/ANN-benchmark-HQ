@@ -80,14 +80,32 @@ PLAN_PLOT_COLORS = {
     "IVF-post": "#e6a23c",
 }
 
+# Flex-era fallback grids. Per-plan grids are normally DERIVED from the loaded
+# sweep CSV (see derive_grids); these constants are used only when a plan has
+# no swept rows. Hardcoding them as the working grids broke hard/superhard
+# packs (swept efSearch grid started at 40, so predictions snapped to >= 100
+# and measure_at clamped every HNSW measurement to the largest swept ef).
 HNSW_GRID = [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000,
              1200, 1400, 1600, 1800, 2000, 2250, 2500]
 # IVF probes: the swept large-dataset grid, plus 500 = the reviews-only x2
 # doubling of the 250 max applied in runner.py.
 IVF_GRID = [5, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100,
             120, 140, 160, 180, 200, 225, 250, 500]
-GRID = {"HNSW-pre": HNSW_GRID, "HNSW-post": HNSW_GRID,
-        "IVF-pre": IVF_GRID, "IVF-post": IVF_GRID}
+FALLBACK_GRID = {"HNSW-pre": HNSW_GRID, "HNSW-post": HNSW_GRID,
+                 "IVF-pre": IVF_GRID, "IVF-post": IVF_GRID}
+
+
+def derive_grids(sweep: pd.DataFrame) -> dict:
+    """Per-plan search-hp grids taken from the swept hyperparams in the CSV."""
+    grids = {}
+    for plan in ANN_PLANS:
+        vals = sorted(
+            int(v)
+            for v in sweep.loc[sweep["plan"] == plan, "hyperparam"].unique()
+            if v > 0
+        )
+        grids[plan] = vals if vals else list(FALLBACK_GRID[plan])
+    return grids
 # A (query, filter, k) triple is the unit of decision: k is part of the query
 # request (top-k), so it identifies a pair alongside the query vector and filter.
 PAIR_KEYS = ["query_type", "query_id_num", "filter_id", "k"]
@@ -315,6 +333,23 @@ def min_feasible(meas, key):
     return float(rt[i]), float(rec[i])
 
 
+def tuned_baseline(meas, pair, plan):
+    """Tuned per-plan baseline point for one (query, filter, k) pair.
+
+    Measured (runtime, recall) at the LOWEST swept hp reaching recall >=
+    target; if no swept hp reaches it, the max swept hp (best available
+    recall). Model-independent: 'always run <plan>, tuned per query'.
+    """
+    key = (*pair, plan)
+    if key not in meas:
+        return None
+    hps, rec, rt = meas[key]
+    ok = np.where(rec >= RECALL_TARGET)[0]
+    i = int(ok[0]) if len(ok) else len(hps) - 1
+    return {"rt": float(rt[i]), "rec": float(rec[i]), "hp": float(hps[i]),
+            "feasible": bool(len(ok))}
+
+
 def build_oracle(meas, pairs) -> dict:
     """pair -> (oracle_plan, oracle_cost_ms, oracle_recall) over feasible plans."""
     oracle = {}
@@ -377,7 +412,7 @@ def stage3_feats(n_pass, rho, N, hp=None, k=None):
 STAGE12_FEATS = ["sigma", "rho", "k"]
 
 
-def fit_models(tr_pp, tr_sweep, min_leaf):
+def fit_models(tr_pp, tr_sweep, min_leaf, grids):
     feas_clf, hp_reg, hp_uni, s3 = {}, {}, {}, {}
     for plan in ANN_PLANS:
         tr = tr_pp[tr_pp["plan"] == plan]
@@ -390,7 +425,7 @@ def fit_models(tr_pp, tr_sweep, min_leaf):
             hp_reg[plan] = CART("reg", min_leaf=min_leaf).fit(
                 fr[STAGE12_FEATS].to_numpy(), np.log(fr["best_hp"].to_numpy()))
         else:  # too few feasible rows -> conservative constant (max grid)
-            hp_reg[plan] = float(np.log(GRID[plan][-1]))
+            hp_reg[plan] = float(np.log(grids[plan][-1]))
     for plan in ALL_PLANS:
         s = tr_sweep[tr_sweep["plan"] == plan]
         if len(s) == 0:
@@ -423,7 +458,7 @@ def group_folds(pp, n_folds=5, seed=0):
     return pp.merge(groups, on=["query_type", "query_id_num"], how="left")
 
 
-def run_cv(sweep, pp, meas, oracle, n_folds=5, seed=0, min_leaf=30):
+def run_cv(sweep, pp, meas, oracle, grids, n_folds=5, seed=0, min_leaf=30):
     pp = group_folds(pp, n_folds, seed)
     fold_of = pp[PAIR_KEYS + ["fold"]].drop_duplicates()
     sweep = sweep.merge(fold_of, on=PAIR_KEYS, how="left")
@@ -438,7 +473,7 @@ def run_cv(sweep, pp, meas, oracle, n_folds=5, seed=0, min_leaf=30):
     for fold in range(n_folds):
         tr_pp, te_pp = pp[pp["fold"] != fold], pp[pp["fold"] == fold]
         tr_sweep, te_sweep = sweep[sweep["fold"] != fold], sweep[sweep["fold"] == fold]
-        feas_clf, hp_reg, hp_uni, s3 = fit_models(tr_pp, tr_sweep, min_leaf)
+        feas_clf, hp_reg, hp_uni, s3 = fit_models(tr_pp, tr_sweep, min_leaf, grids)
 
         # Stage 3 "true hp": predict every test sweep row
         for plan in ALL_PLANS:
@@ -464,7 +499,7 @@ def run_cv(sweep, pp, meas, oracle, n_folds=5, seed=0, min_leaf=30):
             m = plan_arr == plan
             if not m.any():
                 continue
-            grid = GRID[plan]
+            grid = grids[plan]
             sub = te_ann[m]
             X = sub[STAGE12_FEATS].to_numpy()
             n_pass, rho, N = sub["n_pass"].to_numpy(), sub["rho"].to_numpy(), sub["N"].to_numpy()
@@ -527,19 +562,20 @@ def run_cv(sweep, pp, meas, oracle, n_folds=5, seed=0, min_leaf=30):
             bf_rec, bf_rt = measure_at(meas, bf_key, 0)
             cands = {"BF": {"p_feas": 1.0, "cost": bf_cost[pair], "cost_b": bf_cost[pair],
                             "rt": bf_rt, "rt_b": bf_rt, "rec": bf_rec, "rec_b": bf_rec}}
-            hnsw = None
             for r in sub.itertuples():
-                if r.plan == "HNSW-pre":
-                    hnsw = {"rt": r.rt, "rec": r.rec, "rt_b": r.rtb, "rec_b": r.recb}
                 if r.P >= 0.5:
                     cands[r.plan] = {"p_feas": float(r.P), "cost": r.cost, "cost_b": r.costb,
                                      "rt": r.rt, "rt_b": r.rtb, "rec": r.rec, "rec_b": r.recb}
-            if hnsw is None:
-                hnsw = {"rt": bf_rt, "rec": 1.0, "rt_b": bf_rt, "rec_b": 1.0}
+            # Tuned per-plan baselines (model-independent): lowest swept hp with
+            # recall >= target, else max swept hp. Fall back to BF if the plan
+            # was never swept for this pair.
+            bf_point = {"rt": bf_rt, "rec": bf_rec, "hp": 0.0, "feasible": True}
+            hnsw = tuned_baseline(meas, pair, "HNSW-pre") or dict(bf_point)
+            ivf = tuned_baseline(meas, pair, "IVF-pre") or dict(bf_point)
             op, oc, orc = oracle[pair]
             records.append({"pair": pair, "cands": cands, "oracle_plan": op,
                             "oracle_cost": oc, "oracle_recall": orc,
-                            "bf_rt": bf_rt, "hnsw": hnsw})
+                            "bf_rt": bf_rt, "hnsw": hnsw, "ivf": ivf})
 
     diag = {"stage1": stage1, "stage2": stage2, "stage2u": stage2u,
             "s3_true": s3_true, "s3_pred": s3_pred}
@@ -568,22 +604,24 @@ def optimizer_metrics(records, gamma, lam, bump=False):
     oracle = np.empty(n)
     bf = np.empty(n)
     hnsw = np.empty(n)
+    ivf = np.empty(n)
     recall = np.empty(n)
     is_oracle = np.zeros(n, bool)
     chosen = []
-    hk = "rt_b" if bump else "rt"
-    reck = "rec_b" if bump else "rec"
     for i, rec in enumerate(records):
         plan, rt, rcl = decide(rec, gamma, lam, bump)
         realised[i] = rt
         recall[i] = rcl
         oracle[i] = rec["oracle_cost"]
         bf[i] = rec["bf_rt"]
-        hnsw[i] = rec["hnsw"][hk]
+        # tuned per-query baselines (independent of the bump knob)
+        hnsw[i] = rec["hnsw"]["rt"]
+        ivf[i] = rec["ivf"]["rt"]
         is_oracle[i] = plan == rec["oracle_plan"]
         chosen.append(plan)
     fail = recall < RECALL_TARGET
-    hnsw_rec = np.array([rec["hnsw"][reck] for rec in records])
+    hnsw_rec = np.array([rec["hnsw"]["rec"] for rec in records])
+    ivf_rec = np.array([rec["ivf"]["rec"] for rec in records])
     bf_rec = np.array([rec["cands"]["BF"]["rec"] for rec in records])
     regret = realised / np.clip(oracle, 1e-9, None)
     tot_s = realised.sum() / 1000.0
@@ -601,14 +639,19 @@ def optimizer_metrics(records, gamma, lam, bump=False):
         "mean_regret": float(regret.mean()), "median_regret": float(np.median(regret)),
         "total_realised_ms": float(realised.sum()), "total_oracle_ms": float(oracle.sum()),
         "total_bf_ms": float(bf.sum()), "total_hnsw_ms": float(hnsw.sum()),
+        "total_ivf_ms": float(ivf.sum()),
         "bf_qps": float(n / (bf.sum() / 1000.0)),
         "bf_avg_recall": float(bf_rec.mean()),
         "oracle_qps": float(n / (oracle.sum() / 1000.0)),
         "hnsw_qps": float(n / (hnsw.sum() / 1000.0)),
         "hnsw_avg_recall": float(hnsw_rec.mean()),
         "hnsw_fail_rate": float((hnsw_rec < RECALL_TARGET).mean()),
+        "ivf_qps": float(n / (ivf.sum() / 1000.0)),
+        "ivf_avg_recall": float(ivf_rec.mean()),
+        "ivf_fail_rate": float((ivf_rec < RECALL_TARGET).mean()),
         "speedup_vs_bf": float(bf.sum() / realised.sum()),
         "speedup_vs_hnsw": float(hnsw.sum() / realised.sum()),
+        "speedup_vs_ivf": float(ivf.sum() / realised.sum()),
         "chosen": chosen, "realised": realised, "recall": recall, "fail": fail,
     }
 
@@ -663,13 +706,16 @@ def report_optimizer(m, label):
           f"<0.8 on {100*m['bad_recall_rate_080']:.1f}%, "
           f"<0.5 on {100*m['bad_recall_rate_050']:.1f}% of pairs")
     print(f"  THROUGHPUT                     : {m['qps']:.1f} QPS  "
-          f"(BF {m['bf_qps']:.1f}, oracle {m['oracle_qps']:.1f}, HNSW-pre {m['hnsw_qps']:.1f})")
+          f"(BF {m['bf_qps']:.1f}, oracle {m['oracle_qps']:.1f}, "
+          f"HNSW-pre tuned {m['hnsw_qps']:.1f}, IVF-pre tuned {m['ivf_qps']:.1f})")
     print(f"  chosen == oracle plan          : {m['chosen_is_oracle_pct']:.1f}%")
     print(f"  mean regret (realised/oracle)  : {m['mean_regret']:.3f}   median {m['median_regret']:.3f}")
     print(f"  vs always-BF                   : {m['speedup_vs_bf']:.2f}x throughput  "
           f"(BF measured recall {m['bf_avg_recall']:.3f})")
-    print(f"  vs always-HNSW-pre             : {m['speedup_vs_hnsw']:.2f}x throughput  "
+    print(f"  vs always-HNSW-pre (tuned)     : {m['speedup_vs_hnsw']:.2f}x throughput  "
           f"(HNSW-pre avg recall {m['hnsw_avg_recall']:.4f})")
+    print(f"  vs always-IVF-pre (tuned)      : {m['speedup_vs_ivf']:.2f}x throughput  "
+          f"(IVF-pre avg recall {m['ivf_avg_recall']:.4f})")
     mix = pd.Series(m["chosen"]).value_counts()
     print("  chosen-plan mix: " + ", ".join(f"{p}={c}" for p, c in mix.items()))
 
@@ -712,7 +758,8 @@ def plot_pareto(pareto, out_png, label):
 def plot_benefits(records, ops, pareto, out_png, label):
     """Two panels: (A) total-latency bars vs baselines + oracle, each annotated
     with its recall-miss rate; (B) the optimizer's latency-vs-recall-safety
-    frontier with the always-BF / always-HNSW-pre / oracle reference points."""
+    frontier with the always-BF / tuned always-HNSW-pre / tuned always-IVF-pre
+    / oracle reference points."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -721,15 +768,18 @@ def plot_benefits(records, ops, pareto, out_png, label):
     bf_qps = n / (sum(r["bf_rt"] for r in records) / 1000.0)
     oracle_qps = n / (sum(r["oracle_cost"] for r in records) / 1000.0)
     hnsw_qps = n / (sum(r["hnsw"]["rt"] for r in records) / 1000.0)
+    ivf_qps = n / (sum(r["ivf"]["rt"] for r in records) / 1000.0)
     oracle_rec = float(np.mean([r["oracle_recall"] for r in records]))
     hnsw_rec = float(np.mean([r["hnsw"]["rec"] for r in records]))
+    ivf_rec = float(np.mean([r["ivf"]["rec"] for r in records]))
     bf_rec = float(np.mean([r["cands"]["BF"]["rec"] for r in records]))
     d, lb = ops["default"], ops["+lambda+bump"]
 
     bars = [  # (label, qps, avg_recall, color)
         ("always-BF", bf_qps, bf_rec, "#e2585f"),
         ("oracle", oracle_qps, oracle_rec, "#39c07a"),
-        ("always\nHNSW-pre", hnsw_qps, hnsw_rec, "#e6a23c"),
+        ("always\nHNSW-pre\n(tuned)", hnsw_qps, hnsw_rec, "#e6a23c"),
+        ("always\nIVF-pre\n(tuned)", ivf_qps, ivf_rec, "#2a9d8f"),
         (f"optimizer\n(g={d['gamma']:g})", d["qps"], d["avg_recall"], "#5aa0ff"),
         ("optimizer\n(+lam+bump)", lb["qps"], lb["avg_recall"], "#b07ad6"),
     ]
@@ -770,7 +820,9 @@ def plot_benefits(records, ops, pareto, out_png, label):
     ax2.scatter([oracle_rec], [oracle_qps], marker="D", s=110, color="#39c07a",
                 label="oracle", zorder=4)
     ax2.scatter([hnsw_rec], [hnsw_qps], marker="^", s=110, color="#e6a23c",
-                label="always-HNSW-pre", zorder=4)
+                label="always-HNSW-pre (tuned)", zorder=4)
+    ax2.scatter([ivf_rec], [ivf_qps], marker="v", s=110, color="#2a9d8f",
+                label="always-IVF-pre (tuned)", zorder=4)
     ax2.scatter([lb["avg_recall"]], [lb["qps"]], marker="*", s=230,
                 color="#b07ad6", label="optimizer +lam+bump", zorder=5)
     ax2.axvline(RECALL_TARGET, color="#888", ls="--", lw=1, alpha=0.7)
@@ -782,6 +834,17 @@ def plot_benefits(records, ops, pareto, out_png, label):
     ax2.legend(fontsize=8, loc="upper right")
 
     fig.tight_layout()
+    fig.text(
+        0.01, -0.03,
+        "Tuned baselines: per query, the plan is run at the LOWEST swept hp with recall >= "
+        f"{RECALL_TARGET:g} (max swept hp if none reaches it). "
+        "Oracle: per query, the fastest plan among those reaching the recall target, each ANN plan "
+        "at its cheapest swept hp achieving it; BF is always a candidate (recall 1.0). "
+        "Optimizer decision (model-inference) time is NOT charged - realised latency is only the "
+        "measured runtime of the chosen plan - so in the full-BF limit the gamma-sweep endpoint "
+        "coincides exactly with the always-BF point.",
+        fontsize=7, ha="left", va="top", wrap=True,
+    )
     fig.savefig(out_png, dpi=200, bbox_inches="tight")
     plt.close(fig)
     print(f"  saved benefits plot -> {out_png}")
@@ -794,7 +857,8 @@ def plot_robustness(records, ops, pareto, out_png, label):
     """Robustness view: how bad do the recall misses get?
 
     Panel A: CDF of realised recall for the optimizer operating points and the
-    always-HNSW-pre / always-BF / oracle baselines. A curve hugging the bottom-
+    tuned always-HNSW-pre / tuned always-IVF-pre / always-BF / oracle
+    baselines. A curve hugging the bottom-
     right corner is robust; mass to the left of a threshold line is the share
     of queries with recall below it.
     Panel B: share of pairs below each recall threshold across the gamma sweep.
@@ -806,7 +870,8 @@ def plot_robustness(records, ops, pareto, out_png, label):
     curves = [
         ("optimizer (default)", ops["default"]["recall"], "#5aa0ff"),
         ("optimizer (+lam+bump)", ops["+lambda+bump"]["recall"], "#b07ad6"),
-        ("always-HNSW-pre", np.array([r["hnsw"]["rec"] for r in records]), "#e6a23c"),
+        ("always-HNSW-pre (tuned)", np.array([r["hnsw"]["rec"] for r in records]), "#e6a23c"),
+        ("always-IVF-pre (tuned)", np.array([r["ivf"]["rec"] for r in records]), "#2a9d8f"),
         ("always-BF", np.array([r["cands"]["BF"]["rec"] for r in records]), "#e2585f"),
         ("oracle", np.array([r["oracle_recall"] for r in records]), "#39c07a"),
     ]
@@ -900,6 +965,10 @@ def plot_decision_scatter(records, chosen, feat, out_png, label, gamma):
 def run_one(path, gls_label, out, gamma, lam, min_leaf):
     print(f"\n{'='*74}\n GLS = {gls_label}   ({path})\n{'='*74}")
     sweep = load_sweep(path)
+    grids = derive_grids(sweep)
+    print("  per-plan hp grids (derived from swept CSV):")
+    for plan in ANN_PLANS:
+        print(f"    {plan}: {grids[plan]}")
     pp = build_pairplan(sweep)
     meas = build_measure(sweep)
     pairs = [tuple(x) for x in pp[PAIR_KEYS].drop_duplicates().to_numpy()]
@@ -909,6 +978,13 @@ def run_one(path, gls_label, out, gamma, lam, min_leaf):
     print("  per-plan feasibility base rate (fraction reaching recall>=0.95):")
     base = pp.groupby("plan")["feasible"].mean().reindex(ALL_PLANS)
     print("    " + "  ".join(f"{p}={v:.3f}" for p, v in base.items()))
+    for plan in ("HNSW-pre", "IVF-pre"):
+        tuned_hps = [tuned_baseline(meas, pair, plan)["hp"]
+                     for pair in pairs if (*pair, plan) in meas]
+        if tuned_hps:
+            vc = pd.Series(tuned_hps).value_counts().sort_index()
+            print(f"  tuned always-{plan} baseline hp distribution: "
+                  + ", ".join(f"{int(h)}x{int(c)}" for h, c in vc.items()))
 
     feat = {}
     for pair, g in pp.groupby(PAIR_KEYS):
@@ -916,7 +992,7 @@ def run_one(path, gls_label, out, gamma, lam, min_leaf):
         feat[(pair[0], int(pair[1]), int(pair[2]), int(pair[3]))] = (
             float(r0["sigma"]), float(r0["rho"]), pair[0])
 
-    records, diag = run_cv(sweep, pp, meas, oracle, min_leaf=min_leaf)
+    records, diag = run_cv(sweep, pp, meas, oracle, grids, min_leaf=min_leaf)
 
     pd.DataFrame(report_stages(diag)).to_csv(out / f"stage12_metrics_{gls_label}.csv", index=False)
     pd.DataFrame(report_s3(diag)).to_csv(out / f"stage3_metrics_{gls_label}.csv", index=False)
@@ -935,7 +1011,9 @@ def run_one(path, gls_label, out, gamma, lam, min_leaf):
         "gamma", "lam", "bump", "recall_fail_rate", "recall_p10",
         "bad_recall_rate_090", "bad_recall_rate_080", "bad_recall_rate_050",
         "chosen_is_oracle_pct",
-        "mean_regret", "total_realised_ms", "speedup_vs_bf", "speedup_vs_hnsw")}}
+        "mean_regret", "total_realised_ms", "speedup_vs_bf",
+        "speedup_vs_hnsw", "speedup_vs_ivf",
+        "hnsw_qps", "hnsw_avg_recall", "ivf_qps", "ivf_avg_recall")}}
         for name, m in ops.items()]
     pd.DataFrame(knob_rows).to_csv(out / f"operating_points_{gls_label}.csv", index=False)
 
@@ -976,8 +1054,9 @@ def run_one(path, gls_label, out, gamma, lam, min_leaf):
         "recall_p10", "bad_recall_rate_090", "bad_recall_rate_080",
         "bad_recall_rate_050",
         "chosen_is_oracle_pct", "mean_regret", "median_regret", "total_realised_ms",
-        "total_oracle_ms", "total_bf_ms", "total_hnsw_ms", "speedup_vs_bf",
-        "speedup_vs_hnsw")}
+        "total_oracle_ms", "total_bf_ms", "total_hnsw_ms", "total_ivf_ms",
+        "hnsw_qps", "hnsw_avg_recall", "ivf_qps", "ivf_avg_recall",
+        "speedup_vs_bf", "speedup_vs_hnsw", "speedup_vs_ivf")}
         for mm in (optimizer_metrics(records, g, 0.0, False) for g in GAMMA_SWEEP)])
     pareto.to_csv(out / f"gamma_pareto_{gls_label}.csv", index=False)
     print(f"\n--- gamma-sweep Pareto [{gls_label}] (throughput vs average recall) ---")
