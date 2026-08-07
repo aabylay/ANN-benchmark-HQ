@@ -2,10 +2,9 @@
 PG-Vector brute-force (exact) plan.
 
 This module loads the vectors into a PostgreSQL table WITHOUT building any
-vector index (and without an index on the filter attribute). Every query is
-therefore an exact sequential scan: the filter predicate is applied and the
-remaining rows are ordered by the cosine distance operator and limited to k.
-This yields exact filtered top-k results (recall == 1.0) and serves as the
+vector index (HNSW/IVFFlat). Attribute B-tree indexes are created on numeric
+filter columns so Postgres can prefilter before the exact distance order +
+LIMIT k. Queries remain exact filtered top-k (recall == 1.0) and serve as the
 PG-Vector brute-force baseline for the FANNS experiments.
 
 Connection parameters follow the same conventions as the pgvector module
@@ -24,6 +23,7 @@ from typing import Dict, Any, Optional
 from ..base.module import BaseANN
 from ..pgvector_common import (
     copy_items_rows,
+    create_attr_indexes,
     create_items_table,
     filtered_order_query,
     prepare_attrs,
@@ -113,13 +113,18 @@ class PGVector(BaseANN):
             print(f"Error during COPY: {e}")
             raise
 
-        # Brute force: deliberately do NOT create any index (neither a vector
-        # index nor an index on filter attributes). Queries run as exact seq scans.
-        print("brute-force plan: no index created, analyzing table...")
+        # Exact plan: attribute indexes for prefilter, no vector index.
+        print("brute-force plan: creating attribute indexes (no vector index)...")
+        create_attr_indexes(cur, dataset_type)
         cur.execute("ANALYZE items")
         print("done!")
 
         self._cur = cur
+
+    def fit_idx(self, dataset_type):
+        """API parity with other pgvector modules; safe if indexes already exist."""
+        print("creating attribute index...")
+        create_attr_indexes(self._cur, dataset_type)
 
     def set_query_arguments(self, placeholder=0):
         # No search parameters to sweep for the exact brute-force plan.
@@ -149,7 +154,8 @@ class PGVector(BaseANN):
         if self._cur is None:
             return 0
         try:
-            self._cur.execute("SELECT pg_relation_size('items')")
+            # Table heap + attribute indexes (no vector index for this plan).
+            self._cur.execute("SELECT pg_total_relation_size('items')")
             return self._cur.fetchone()[0] / 1024
         except Exception:
             return 0

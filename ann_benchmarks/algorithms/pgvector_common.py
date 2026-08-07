@@ -84,5 +84,7 @@ def filtered_order_query(metric: str, filter_parts, dataset_type: str) -> str:
 
 def create_attr_indexes(cur, dataset_type: str):
     for col in numeric_attr_names_for(dataset_type):
-        cur.execute(f"CREATE INDEX ON items ({col})")
+        cur.execute(
+            f"CREATE INDEX IF NOT EXISTS items_{col}_idx ON items ({col})"
+        )
         print(f"[PGVector] Created index on {col}")
