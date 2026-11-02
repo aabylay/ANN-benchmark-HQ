@@ -4,6 +4,7 @@ import re
 import traceback
 from typing import Any, Optional, Set, Tuple, Iterator
 import h5py
+import numpy as np
 
 from ann_benchmarks.definitions import Definition
 
@@ -34,6 +35,25 @@ def build_result_filepath(dataset_name: Optional[str] = None,
     Returns:
         str: The constructed filepath.
     """
+    if workload == "native":
+        from ann_benchmarks.corpora import result_dir
+
+        table = data_table if data_table else "cases"
+        d = [result_dir("caselaw", workload="native", data_table=table)]
+        if count:
+            d.append(str(count))
+        if definition:
+            d.append(definition.algorithm + ("-batch" if batch_mode else ""))
+            qargs = query_arguments if query_arguments is not None else []
+            data = list(definition.arguments) + list(qargs)
+            d.append(
+                table
+                + "_"
+                + re.sub(r"\W+", "_", json.dumps(data, sort_keys=True)).strip("_")
+                + ".hdf5"
+            )
+        return os.path.join(*d)
+
     if workload in ("hard", "superhard"):
         # results/MoRe_UPD_{size}_{hard|superhard}_{table}/{k}/{algo}/...
         d = ["results", f"MoRe_UPD_{dataset_size}_{workload}_{data_table}"]
@@ -90,20 +110,37 @@ def store_results(dataset_name: str, count: int, definition: Definition, query_a
         if segment_size is not None:
             attrs = {**attrs, "segment_size": segment_size}
         attrs = {**attrs, "workload": workload}
+        per_query_dc = attrs.pop("per_query_dist_comps", None)
         for k, v in attrs.items():
             f.attrs[k] = v
-        times = f.create_dataset("times", (len(results),), "f")
-        neighbors = f.create_dataset("neighbors", (len(results), count), "i")
-        distances = f.create_dataset("distances", (len(results), count), "f")
-        
-        for i, (time, ds) in enumerate(results): 
-            times[i] = time
+        n_res = len(results)
+        times_arr = np.empty((n_res,), dtype=np.float32)
+        neighbors_arr = np.full((n_res, count), -1, dtype=np.int32)
+        distances_arr = np.full((n_res, count), float("inf"), dtype=np.float32)
+
+        for i, (time, ds) in enumerate(results):
+            times_arr[i] = time
             try:
-                neighbors[i] = [n for n, d in ds] + [-1] * (count - len(ds))
-                distances[i] = [d for n, d in ds] + [float("inf")] * (count - len(ds))
+                m = len(ds)
+                if m > 0:
+                    neighbors_arr[i, :m] = [n for n, d in ds]
+                    distances_arr[i, :m] = [d for n, d in ds]
             except Exception as e:
                 print(f"Error storing neighbors for result {i}: {ds}", flush=True)
                 raise e
+        f.create_dataset("times", data=times_arr)
+        f.create_dataset("neighbors", data=neighbors_arr)
+        f.create_dataset("distances", data=distances_arr)
+        if per_query_dc is not None:
+            dc = np.asarray(per_query_dc, dtype=np.float64)
+            if dc.shape[0] != len(results):
+                print(
+                    f"warning: per-query dist_comps length {dc.shape[0]} "
+                    f"!= n_queries {len(results)}; not storing dataset",
+                    flush=True,
+                )
+            else:
+                f.create_dataset("dist_comps", data=dc)
 
 def load_all_results(dataset: Optional[str] = None, 
                  count: Optional[int] = None, 

@@ -16,6 +16,7 @@ import psutil
 from .definitions import (Definition, InstantiationStatus, algorithm_status,
                                      get_definitions, list_algorithms)
 from .constants import INDEX_DIR
+from .corpora import CORPORA, DEFAULT_QO_SAMPLE_FRAC
 from .datasets import DATASETS, get_dataset, get_train_dataset
 from .results import build_result_filepath
 from .runner import run, run_docker
@@ -70,14 +71,27 @@ def run_worker(cpu: int, mem_limit: int, args: argparse.Namespace, queue: multip
     print(queue)
     while not queue.empty():
         definition = queue.get()
-        if args.local:
-            cpu_limit = str(cpu) if not args.batch else f"0-{multiprocessing.cpu_count() - 1}"
-            print(f"Running in Docker with CPU limit: {cpu_limit} and memory limit: {mem_limit}")
-            run_docker(definition, args.dataset, args.dataset_size, args.runs, args.timeout, args.batch, cpu_limit, mem_limit, workload=getattr(args, "workload", "flex"))
+        if args.batch:
+            cpu_limit = f"0-{multiprocessing.cpu_count() - 1}"
+        elif isinstance(cpu, int) and cpu > 1:
+            cpu_limit = f"0-{min(cpu, multiprocessing.cpu_count()) - 1}"
         else:
-            cpu_limit = str(cpu) if not args.batch else f"0-{multiprocessing.cpu_count() - 1}"
-            print(f"Running in Docker with CPU limit: {cpu_limit} and memory limit: {mem_limit}")
-            run_docker(definition, args.dataset, args.dataset_size, args.runs, args.timeout, args.batch, cpu_limit, mem_limit, workload=getattr(args, "workload", "flex"))
+            cpu_limit = str(cpu)
+        print(f"Running in Docker with CPU limit: {cpu_limit} and memory limit: {mem_limit}")
+        run_docker(
+            definition,
+            args.dataset,
+            args.dataset_size,
+            args.runs,
+            args.timeout,
+            args.batch,
+            cpu_limit,
+            mem_limit,
+            workload=getattr(args, "workload", "flex"),
+            corpus=getattr(args, "corpus", "morevec"),
+            qo_sample_frac=getattr(args, "qo_sample_frac", DEFAULT_QO_SAMPLE_FRAC),
+            max_queries=getattr(args, "max_queries", None),
+        )
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -97,9 +111,27 @@ def parse_arguments() -> argparse.Namespace:
     )
     parser.add_argument(
         "--workload",
-        choices=["flex", "hard", "superhard"],
+        choices=["flex", "hard", "superhard", "native"],
         default="flex",
-        help="Workload mode: flex (default), hard, or superhard packs",
+        help="Workload mode: flex (default), hard, superhard, or native packs",
+    )
+    parser.add_argument(
+        "--corpus",
+        choices=CORPORA,
+        default="morevec",
+        help="Corpus to benchmark: morevec (default) or caselaw",
+    )
+    parser.add_argument(
+        "--qo-sample-frac",
+        type=float,
+        default=DEFAULT_QO_SAMPLE_FRAC,
+        help="Stratified training sample fraction for CaseLaw",
+    )
+    parser.add_argument(
+        "--max-queries",
+        type=positive_int,
+        default=None,
+        help="Optional query prefix truncation for CaseLaw smoke runs",
     )
     parser.add_argument(
         "--definitions", metavar="FOLDER", help="base directory of algorithms. Algorithm definitions expected at 'FOLDER/*/config.yml'", default="ann_benchmarks/algorithms"
@@ -330,14 +362,23 @@ def main():
         shutil.rmtree(INDEX_DIR)
     #print(args.count)
     #raise NameError
-    dataset, dimension = get_train_dataset("movies", args.dataset_size)
-    
+    if args.corpus == "caselaw":
+        dataset, dimension = get_train_dataset("cases", args.dataset_size)
+        distance_metric = str(dataset.attrs.get("metric", "euclidean"))
+        point_type = dataset.attrs.get("point_type", "float")
+        dataset.close()
+    else:
+        dataset, dimension = get_train_dataset("movies", args.dataset_size)
+        distance_metric = "angular"
+        point_type = dataset.attrs.get("point_type", "float")
+        dataset.close()
+
     # print(f"Args defined: {args}", flush=True)
-    
+
     definitions: List[Definition] = get_definitions(
         dimension=dimension,
-        point_type=dataset.attrs.get("point_type", "float"),
-        distance_metric="angular",
+        point_type=point_type,
+        distance_metric=distance_metric,
         count=args.count,
         base_dir=args.definitions,
     )

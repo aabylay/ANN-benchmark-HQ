@@ -32,13 +32,21 @@ def copy_items_rows(
     attrs: Mapping[str, numpy.ndarray],
     cols: Sequence[str],
 ):
-    """COPY id, embedding, and numeric attribute columns."""
+    """COPY id, embedding, and numeric attribute columns.
+
+    Attribute values are written as float64. Do not round-trip through
+    float32 first: PostgreSQL then stores the expanded float32 mantissa
+    (e.g. 9.199999809265137 for 9.2) and ``col >= 9.2::FLOAT`` excludes
+    every row whose original value was the inexact tenth.
+    """
     type_list = ["int4", "vector"] + ["float8"] * len(cols)
     col_names = ", ".join(["id", "embedding"] + list(cols))
     with cur.copy(f"COPY items ({col_names}) FROM STDIN WITH (FORMAT BINARY)") as copy:
         copy.set_types(type_list)
         for i, embedding in enumerate(X):
-            row = [i, embedding.tolist()] + [float(attrs[c][i]) for c in cols]
+            row = [i, embedding.tolist()] + [
+                float(numpy.float64(attrs[c][i])) for c in cols
+            ]
             copy.write_row(tuple(row))
 
 

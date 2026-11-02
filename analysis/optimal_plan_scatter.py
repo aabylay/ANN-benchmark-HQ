@@ -37,9 +37,13 @@ from query_optimizer_analysis import (
     FAISS_ALL_ALGOS,
     RECALL_TARGET,
     SYSTEMS,
+    apply_k10_footnote,
     attach_gls_correlation,
     build_results_df,
+    df_is_k10_only,
+    format_recall_target,
     plan_label,
+    recall_tag,
     _present_algos,
 )
 
@@ -93,11 +97,15 @@ def prepare_plans_df(df: pd.DataFrame, k: int | None = None) -> pd.DataFrame:
     t_b is computed per (query, filter, k). Pass k=None to keep all top-k values.
     """
     out = df.copy()
+    if "split" in out.columns and (out["split"] == "test").any():
+        out = out[out["split"] == "test"].copy()
     if k is not None and "k" in out.columns:
         out = out[out["k"] == k]
         if out.empty:
             return out
     group_keys = _workload_keys(out) + ["algorithm", "hyperparam"]
+    if not out.duplicated(subset=group_keys).any():
+        return out.reset_index(drop=True)
 
     agg: dict[str, str] = {
         "recall": "mean",
@@ -231,6 +239,15 @@ def aggregate_optimal_across_k(optimal_df: pd.DataFrame) -> pd.DataFrame:
         return optimal_df
 
     has_k = "k" in optimal_df.columns
+    if has_k and optimal_df["k"].nunique() == 1 and not optimal_df.duplicated(subset=POINT_KEYS).any():
+        out = optimal_df[
+            list(POINT_KEYS)
+            + ["is_optimal", "filter_selectivity", "gls_correlation", "hyperparam_name", "plan_label"]
+        ].copy()
+        out["num_optimal_k"] = out["is_optimal"].astype(int).clip(upper=3)
+        out["n_k_present"] = 1
+        return out.drop(columns=["is_optimal"]).reset_index(drop=True)
+
     group_cols = list(POINT_KEYS)
     agg: dict[str, str] = {
         "is_optimal": "sum",
@@ -279,6 +296,7 @@ def plot_optimal_scatter_for_algorithm(
     query_type: str | None = None,
     title_suffix: str = "",
     max_k_count: int = 3,
+    k10_footnote: bool = False,
 ):
     """One figure for an index type; each subplot is one hyperparameter value.
 
@@ -337,6 +355,7 @@ def plot_optimal_scatter_for_algorithm(
                 edgecolors="none",
                 zorder=1 + n_opt,
                 label=NUM_OPTIMAL_LABELS.get(n_opt, f"{n_opt} k optimal"),
+                rasterized=len(hp_df) > 10000,
             )
         n_any = int((hp_df["num_optimal_k"] > 0).sum())
         n_tot = len(hp_df)
@@ -388,11 +407,12 @@ def plot_optimal_scatter_for_algorithm(
         title="# k optimal",
     )
     fig.suptitle(
-        f"Optimal plans: {label} (recall ≥ {recall_target}, "
+        f"Optimal plans: {label} (recall ≥ {format_recall_target(recall_target)}, "
         f"runtime ≤ t_b·(1+{eps:g}), {gls_note}){title_suffix}",
         fontsize=12,
     )
     fig.tight_layout(rect=[0, 0, 0.90, 0.96])
+    apply_k10_footnote(fig, k10_footnote)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=200, bbox_inches="tight")
     fig.savefig(output_path.with_suffix(".pdf"), bbox_inches="tight")
@@ -432,11 +452,14 @@ def generate_optimal_plots(
     gls_source: str,
     groups: dict[str, list[str]] | None = None,
     write_flags: bool = False,
+    k10_footnote: bool | None = None,
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     groups = groups or _candidate_algo_groups(df)
     n_k = int(df["k"].nunique()) if "k" in df.columns else 1
     max_k_count = min(3, n_k)
+    if k10_footnote is None:
+        k10_footnote = df_is_k10_only(df)
 
     for group_name, algos in groups.items():
         print(f"\n=== Optimal-plan plots: {group_name} ({gls_source} GLS, {n_k} k values) ===")
@@ -495,8 +518,11 @@ def generate_optimal_plots(
                 query_type=None,
                 title_suffix=f" — all queries{k_note}",
                 max_k_count=max_k_count,
+                k10_footnote=k10_footnote,
             )
-            for qt in ["movies", "reviews"]:
+            for qt in ["movies", "reviews", "cases"]:
+                if not (plot_df["query_type"] == qt).any():
+                    continue
                 plot_optimal_scatter_for_algorithm(
                     plot_df,
                     algo,
@@ -507,6 +533,7 @@ def generate_optimal_plots(
                     query_type=qt,
                     title_suffix=f" — {qt}{k_note}",
                     max_k_count=max_k_count,
+                    k10_footnote=k10_footnote,
                 )
 
 
@@ -561,7 +588,7 @@ def main():
     )
     parser.add_argument(
         "--gls-est-stats",
-        default="data/datasets/MoRe_large/stats/gls_correlation_estimates_ivf_lsek2048_a1_0.csv",
+        default="data/datasets/MoRe_large/stats/gls_correlation_estimates_ivf_tiers1-10-100_cap2048_a1_0.csv",
         help="Estimated GLS correlation stats",
     )
     parser.add_argument("--recall-target", type=float, default=RECALL_TARGET)
@@ -580,13 +607,15 @@ def main():
     )
     parser.add_argument(
         "--output-dir",
-        default="analysis/plots/query_optimizer/optimal",
-        help="Output directory for exact-GLS optimal plots",
+        default=None,
+        help="Output directory for exact-GLS optimal plots. "
+        "Default: analysis/plots/query_optimizer/{rXXX}/optimal",
     )
     parser.add_argument(
         "--gls-est-output-dir",
-        default="analysis/plots/query_optimizer/optimal/gls_est",
-        help="Output directory for estimated-GLS optimal plots",
+        default=None,
+        help="Output directory for estimated-GLS optimal plots. "
+        "Default: {output-dir}/gls_est",
     )
     parser.add_argument(
         "--groups",
@@ -608,8 +637,15 @@ def main():
     gls_est_stats = root / args.gls_est_stats
     results_csv = root / args.results_csv if args.results_csv else None
     gls_est_csv = root / args.gls_est_results_csv if args.gls_est_results_csv else None
-    output_dir = root / args.output_dir
-    gls_est_output_dir = root / args.gls_est_output_dir
+    tag = recall_tag(args.recall_target)
+    if args.output_dir:
+        output_dir = root / args.output_dir
+    else:
+        output_dir = root / "analysis" / "plots" / "query_optimizer" / tag / "optimal"
+    if args.gls_est_output_dir:
+        gls_est_output_dir = root / args.gls_est_output_dir
+    else:
+        gls_est_output_dir = output_dir / "gls_est"
 
     # --- exact GLS ---
     df_exact_raw = load_or_build_df(
@@ -639,6 +675,7 @@ def main():
             print(f"No matching groups in {args.groups}; available: {list(_candidate_algo_groups(df_exact))}")
             return
 
+    k10_footnote = df_is_k10_only(df_exact) or k_filter == 10
     print(f"Exact GLS: {len(df_exact)} rows, groups={list(groups)}")
     generate_optimal_plots(
         df_exact,
@@ -648,6 +685,7 @@ def main():
         gls_source="exact",
         groups=groups,
         write_flags=args.write_flags,
+        k10_footnote=k10_footnote,
     )
 
     # --- estimated GLS ---
@@ -657,13 +695,13 @@ def main():
         "gls_correlation_est" in df_exact_raw.columns
         and df_exact_raw["gls_correlation_est"].notna().any()
     )
-    if gls_est_csv is not None and gls_est_csv.is_file():
-        print(f"\nLoading estimated-GLS results from {gls_est_csv}")
-        df_est = pd.read_csv(gls_est_csv)
-    elif has_est_col:
+    if has_est_col:
         print("\nDeriving estimated-GLS results from gls_correlation_est column")
         df_est = df_exact_raw.copy()
         df_est["gls_correlation"] = df_est["gls_correlation_est"]
+    elif gls_est_csv is not None and gls_est_csv.is_file():
+        print(f"\nLoading estimated-GLS results from {gls_est_csv}")
+        df_est = pd.read_csv(gls_est_csv)
     elif gls_est_stats.is_file():
         print(f"\nAttaching estimated GLS from {gls_est_stats}")
         drop_cols = [c for c in ("gls_correlation", "estimator") if c in df_exact_raw.columns]
@@ -701,6 +739,7 @@ def main():
         gls_source="estimated",
         groups=est_groups,
         write_flags=args.write_flags,
+        k10_footnote=k10_footnote or df_is_k10_only(df_est),
     )
 
 

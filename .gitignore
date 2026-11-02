@@ -51,3 +51,7 @@ __pycache__
 # Milvus/Docker volumes (may have permission issues)
 volumes/
 milvus_data/
+
+# Campaign design notes. README.md stays tracked.
+NOTES_task1_hard_superhard.md
+

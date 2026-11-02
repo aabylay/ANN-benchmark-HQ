@@ -2,7 +2,7 @@
 
 This repository extends [ann-benchmarks](https://github.com/erikbern/ann-benchmarks) for **Filtered ANNS** queries on the MoRe dataset. Benchmarks measure recall, query latency, and throughput under varying filter selectivity.
 
-The current branch (`fannsqo`) focuses on **query plan selection**: comparing pre-filtering, post-filtering, and brute-force execution strategies across FAISS and pgvector, then analyzing which plan is best per query. Evaluation on the large MoRe dataset has been run; raw HDF5 results live under `results/`, and query-optimizer analysis outputs under `analysis/plots/query_optimizer/`.
+The current branch (`fannsqo`) focuses on **query plan selection**: comparing pre-filtering, post-filtering, and brute-force execution strategies across FAISS and pgvector, then analyzing which plan is best per query. The two corpora are **MoReVec** (flex, hard, and superhard workloads) and **CaseLaw** (native filtered workload, 7,414,023 vectors). Raw HDF5 results live under `results/`, and query-optimizer analysis outputs under `analysis/plots/`.
 
 ## Overview
 
@@ -112,15 +112,21 @@ No `--workload` flag ⇒ same as today's flex large-MoRe campaign.
 `starter.py` generates algorithm config via `make_yaml.py` and runs the benchmark sweep:
 
 ```bash
-# Flex (default) — FAISS plans, fid loop, k∈{10,20,40}
-python starter.py --dataset_size large
+# MoReVec flex — FAISS plans, fid loop, k∈{10,20,40}
+python starter.py --dataset morevec --dataset_size large
 
-# Hard or superhard packs — all 8 FAISS/pgvector plans, k=10
-python starter.py --dataset_size large --workload hard
-python starter.py --dataset_size large --workload superhard
+# MoReVec hard or superhard packs — all 8 FAISS/pgvector plans, k=10
+python starter.py --dataset morevec --dataset_size large --workload hard
+python starter.py --dataset morevec --dataset_size large --workload superhard
+
+# CaseLaw native workload (official filtered queries; not an HCBGen pack)
+python starter.py --dataset caselaw
+
+# Both corpora. This is also the default when --dataset is omitted.
+python starter.py --dataset both --dataset_size large
 
 # Optional: restrict algorithms
-python starter.py --dataset_size large --workload hard --algorithms faiss-flat,pgvector_bf
+python starter.py --dataset morevec --dataset_size large --workload hard --algorithms faiss-flat,pgvector_bf
 ```
 
 End-to-end hard+superhard campaign (Docker rebuild → BF smoke → 8-plan sweep → QO ×4 → optimal-plan scatters ×4; add `--with-learned-qo` for the qo_prototype stage), intended under `nohup`:
@@ -131,7 +137,7 @@ nohup bash scripts/run_task1_hard_superhard_campaign.sh \
   > logs/task1_hard_superhard/master_$(date +%Y%m%d_%H%M%S).log 2>&1 &
 ```
 
-See `NOTES_task1_hard_superhard.md` for status/log locations and acceptance notes.
+The campaign log is the file named in that command. `--dataset` defaults to `both`, so a MoRe-only campaign must pass `--dataset morevec`.
 
 ### Config generation: `make_yaml.py`
 
@@ -147,9 +153,11 @@ See `NOTES_task1_hard_superhard.md` for status/log locations and acceptance note
 
 1. Builds a per-query results CSV from HDF5 benchmark outputs.
 2. Verifies brute-force plans (`faiss-flat`, `pgvector_bf`) achieve recall = 1.0.
-3. For each ANN method, picks the hyperparameter that maximizes QPS subject to mean recall ≥ 0.95.
+3. For each ANN method, picks the hyperparameter that maximizes QPS subject to mean recall ≥ the target (default **0.95**; also **0.80**, **0.90**, and **0.99**).
 4. For each query, picks the best plan among tuned ANN methods and brute-force.
 5. Produces scatter plots (selectivity vs GLS correlation, colored by best plan), QPS–recall frontiers, in-system oracle speedup charts, and CSV summaries.
+
+Shared CSVs stay at the output-dir root. Threshold-dependent plots and CSVs nest under `r080/` / `r090/` / `r095/` / `r099/` (`recall_tag(t) = f"r{round(t*100):03d}"`).
 
 **Run** (after flex benchmark results exist):
 
@@ -159,33 +167,41 @@ python query_optimizer_analysis.py \
   --results-dir results/MoRe_UPD_large_attidx_0 \
   --dataset-size large \
   --filter-stats data/datasets/MoRe_large/stats/filter_stats_0_k2048.csv \
-  --output-dir plots/query_optimizer
+  --output-dir plots/query_optimizer \
+  --recall-target 0.95
+# also: --recall-target 0.80  → plots/query_optimizer/r080/
+#       --recall-target 0.90  → plots/query_optimizer/r090/
+#       --recall-target 0.99  → plots/query_optimizer/r099/
 ```
 
-**Outputs** (written to `analysis/plots/query_optimizer/` by default):
+**Outputs** (shared CSVs at `analysis/plots/query_optimizer/`; threshold-dependent files under `rXXX/`):
 
 | File | Description |
 |------|-------------|
-| `all_query_results.csv` | Per-query recall, latency, QPS for every algorithm/hyperparam |
-| `best_hyperparameters.csv` | Tuned search params per ANN method at recall ≥ 0.95 |
-| `hyperparam_sweep.csv`, `hyperparam_recommendations.csv` | Full sweep and guidance for extending param ranges |
-| `best_plan_per_query.csv` | Oracle best plan per query |
-| `system_oracle_speedup.csv`, `system_oracle_speedup.png` | Speedup from picking HNSW vs IVF per query |
-| `best_plan_scatter_*.png` | Selectivity vs GLS correlation, colored by winning plan |
-| `best_plan_by_selectivity_bin.png` | Plan distribution across selectivity bins |
-| `qps_recall_frontier_*.png` | QPS–recall curves with chosen hyperparameters marked |
+| `all_query_results.csv` | Per-query recall, latency, QPS for every algorithm/hyperparam (workload root) |
+| `rXXX/best_hyperparameters.csv` | Tuned search params per ANN method at the recall target |
+| `hyperparam_sweep.csv` | Full HP × mean-recall/QPS table (workload root) |
+| `rXXX/hyperparam_recommendations.csv` | Guidance for extending param ranges at the target |
+| `rXXX/best_plan_per_query.csv` | Oracle best plan per query |
+| `rXXX/system_oracle_speedup.csv`, `rXXX/system_oracle_speedup.png` | Speedup from picking HNSW vs IVF per query |
+| `rXXX/best_plan_scatter_*.png` | Selectivity vs GLS correlation, colored by winning plan |
+| `rXXX/best_plan_by_selectivity_bin.png` | Plan distribution across selectivity bins |
+| `rXXX/qps_recall_frontier_*.png` | QPS–recall curves with chosen hyperparameters marked |
 
 ### Hard / superhard workloads
 
 `analysis/query_optimizer_hard_analysis.py` consumes
 `results/MoRe_UPD_{size}_{hard|superhard}_{movies|reviews}/` and joins per-query
 σ / Post_Hardness / exact GLS from the pack (plus optional ρ̂ CSV). It emits the
-same oracle CSVs/plots style as flex, plus **tertile-binned QPS–recall** frontiers.
+same oracle CSVs/plots style as flex, plus **per-algorithm QPS–recall frontiers**
+by Post_Hardness (red) and estimated GLS (green) tertiles.
 
 ```bash
 python analysis/query_optimizer_hard_analysis.py --hardness hard --table movies
-python analysis/query_optimizer_hard_analysis.py --hardness superhard --table reviews
+python analysis/query_optimizer_hard_analysis.py --hardness superhard --table reviews --recall-target 0.90
 # → analysis/plots/query_optimizer_{hard|superhard}_{movies|reviews}/
+#    shared: all_query_results.csv, runtime/, qps_recall_tertiles_per_algo/
+#    per target: r080/ r090/ r095/ r099/ (default --recall-target 0.95 → r095/)
 ```
 
 Optional ρ̂ cache (same GLS-CorE settings as flex large):
@@ -196,37 +212,66 @@ python scripts/compute_gls_estimates_hard.py --hardness hard --tables movies rev
 ```
 
 **Optimal-plan scatters.** After the QO analysis, the campaign runs
-`analysis/optimal_plan_scatter.py` for each `(hardness, table)`: per query, the
-best latency `t_b` is the fastest plan with recall ≥ 0.95, and an (algo, HP) is
-near-optimal when `recall ≥ 0.95` and `runtime ≤ t_b·(1+eps)` (default
-`eps = 0.1`). One figure per algorithm, one subplot per search HP, axes =
-selectivity × GLS. Exact-GLS figures go to `…/optimal/`; when ρ̂ is available
+`analysis/optimal_plan_scatter.py` for each `(hardness, table)` × `{0.80, 0.90, 0.95, 0.99}`:
+per query, the best latency `t_b` is the fastest plan with recall ≥ the target, and
+an (algo, HP) is near-optimal when `recall ≥ target` and `runtime ≤ t_b·(1+eps)`
+(default `eps = 0.1`). One figure per algorithm, one subplot per search HP, axes =
+selectivity × GLS. Exact-GLS figures go to `…/rXXX/optimal/`; when ρ̂ is available
 (the `gls_est/all_query_results.csv` twin or the `gls_correlation_est` column)
-a parallel tree is written to `…/optimal/gls_est/`, otherwise the est pass is
-skipped with a log line. Manual invocation:
+a parallel tree is written to `…/rXXX/optimal/gls_est/`, otherwise the est pass is
+skipped with a log line. Hard/superhard packs are k=10 only, so R≥0.80 is 8/10+,
+R≥0.90 is 9/10+, and R≥0.95 and R≥0.99 both require 10/10 hits (figures include
+that footnote). Manual invocation:
 
 ```bash
 python analysis/optimal_plan_scatter.py \
   --results-csv analysis/plots/query_optimizer_hard_movies/all_query_results.csv \
   --gls-est-results-csv analysis/plots/query_optimizer_hard_movies/gls_est/all_query_results.csv \
-  --k 10 --eps 0.1 \
-  --output-dir analysis/plots/query_optimizer_hard_movies/optimal \
-  --gls-est-output-dir analysis/plots/query_optimizer_hard_movies/optimal/gls_est
+  --k 10 --eps 0.1 --recall-target 0.95 \
+  --output-dir analysis/plots/query_optimizer_hard_movies/r095/optimal \
+  --gls-est-output-dir analysis/plots/query_optimizer_hard_movies/r095/optimal/gls_est
 ```
 
 **Learned QO prototype** (`analysis/qo_prototype.py`, campaign flag
 `--with-learned-qo`) evaluates the per-query plan+HP predictor on the same
-CSVs → `analysis/plots/qo_prototype_{hardness}_{table}/`. Per-plan HP grids
+CSVs (always read from the workload-root `all_query_results.csv` and sibling
+`gls_est/`) → `analysis/plots/qo_prototype_{hardness}_{table}/rXXX/`. Per-plan HP grids
 are derived from the swept hyperparams in the results CSV (the hardcoded
 flex-era grids are only a fallback). The `always-HNSW-pre (tuned)` /
 `always-IVF-pre (tuned)` baselines run each plan per query at the lowest swept
-HP reaching recall ≥ 0.95 (max swept HP if none does). The oracle point is,
+HP reaching the recall target (default 0.95; also 0.80, 0.90, and 0.99; max swept HP if none does). The oracle point is,
 per query, the fastest plan among those reaching the recall target, each ANN
 plan at its cheapest swept HP achieving it, with BF always a candidate
 (recall 1.0). Note the evaluation does **not** charge optimizer decision
 (model-inference) time — realised latency is only the measured runtime of the
 chosen plan — so in the full-BF limit the gamma-sweep endpoint coincides
 exactly with the always-BF point.
+
+```bash
+python analysis/qo_prototype.py \
+  --results analysis/plots/query_optimizer_hard_movies/all_query_results.csv \
+  --out analysis/plots/qo_prototype_hard_movies \
+  --recall-target 0.90
+# → analysis/plots/qo_prototype_hard_movies/r090/
+# also: --recall-target 0.80 → analysis/plots/qo_prototype_hard_movies/r080/
+```
+
+`rXXX/qps_recall_plans_{exact,estimated}.png` is the throughput-vs-recall figure:
+static HNSW-pre and IVF-pre curves (one global `efSearch` or `nprobe` for every
+query), plus single points for brute force (recall 1.0), the per-query oracle,
+the full query optimizer, and physical-only optimizers. A physical-only
+optimizer keeps the logical plan fixed (`HNSW-pre` or `IVF-pre` / IVFFlat) and
+only predicts `efSearch` or `nprobe`, using the same cross-validated model as
+the full optimizer.
+
+The cached-data GLS contribution study covers the original flex
+movies/reviews/pooled workloads plus the six hard/superhard workloads at all
+four recall targets:
+
+```bash
+GLS_CONTRIBUTION_STUDY=1 bash scripts/run_qo_prototype_hard_superhard.sh
+# → analysis/plots/gls_contribution_summary.png (9 workloads × 4 targets)
+```
 
 Recall for hard packs uses cached **angular** filtered GT under
 `data/datasets/MoRe_large/stats/angular_gt_{hardness}_{table}_k10.npy` (pack
@@ -300,7 +345,7 @@ ANN-benchmark-HQ/
 │   └── run_task1_hard_superhard_campaign.sh
 ├── data/datasets/              # MoRe_small, MoRe_medium, MoRe_large
 ├── results/                    # HDF5 benchmark outputs
-├── NOTES_task1_hard_superhard.md
+├── datasets_etl/               # CaseLaw pack builder
 ├── make_yaml.py
 ├── starter.py                  # --workload flex|hard|superhard
 ├── run.py

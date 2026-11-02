@@ -7,6 +7,10 @@ filter columns so Postgres can prefilter before the exact distance order +
 LIMIT k. Queries remain exact filtered top-k (recall == 1.0) and serve as the
 PG-Vector brute-force baseline for the FANNS experiments.
 
+Filter attributes are stored as FLOAT8 from the original float64 HDF5 values
+(not float32). Round-tripping 9.2 through float32 stores 9.199999809265137,
+which then fails ``avgrating >= 9.2`` and makes recall drop below 1.0.
+
 Connection parameters follow the same conventions as the pgvector module
 (see ANN_BENCHMARKS_PG_* environment variables).
 """
@@ -117,6 +121,16 @@ class PGVector(BaseANN):
         print("brute-force plan: creating attribute indexes (no vector index)...")
         create_attr_indexes(cur, dataset_type)
         cur.execute("ANALYZE items")
+        cur.execute("SELECT indexname FROM pg_indexes WHERE tablename = 'items'")
+        leftover = [row[0] for row in cur.fetchall()]
+        if leftover:
+            raise RuntimeError(
+                f"pgvector_bf expected no indexes on items, found {leftover}"
+            )
+        # Belt-and-suspenders: even if a leftover index appeared, never use it.
+        cur.execute("SET enable_indexscan = off")
+        cur.execute("SET enable_bitmapscan = off")
+        cur.execute("SET enable_indexonlyscan = off")
         print("done!")
 
         self._cur = cur

@@ -7,7 +7,8 @@ Consumes results under::
 
 Joins per-query filter / σ / Post_Hardness / exact GLS from the pack HDF5,
 optionally attaches estimated GLS (ρ̂) from a cache CSV, and emits the same
-oracle CSVs/plots as the flex analysis plus tertile-binned QPS–recall frontiers.
+oracle CSVs/plots as the flex analysis plus per-algorithm QPS–recall frontiers
+by Post_Hardness (red) and estimated GLS (green) tertiles.
 """
 
 from __future__ import annotations
@@ -30,18 +31,18 @@ from query_optimizer_analysis import (  # noqa: E402
     ANN_METHODS,
     BF_METHODS,
     FAISS_ALL_ALGOS,
-    FAISS_BUILTIN_ALGOS,
     RECALL_TARGET,
     analyze_hyperparam_recommendations,
     compute_system_oracle_speedup,
+    df_is_k10_only,
     find_best_hyperparams,
     generate_scatter_plots,
     plan_label,
     plot_faiss_all_qps_recall_frontier,
     plot_qps_recall_frontier,
     plot_system_speedup,
+    recall_tag,
     verify_brute_force,
-    _plot_qps_recall_frontier_panel,
     _present_algos,
 )
 
@@ -282,6 +283,10 @@ def build_hard_results_df(
         with h5py.File(file, "r") as f:
             neighbors = f["neighbors"][:]
             times = f["times"][:]
+            if "dist_comps" in f:
+                dist_comps = np.asarray(f["dist_comps"][:], dtype=np.float64)
+            else:
+                dist_comps = np.full(len(times), np.nan, dtype=np.float64)
         if neighbors.shape[0] != meta["n"]:
             print(f"Skipping {file}: n_queries mismatch {neighbors.shape[0]} vs {meta['n']}")
             continue
@@ -302,12 +307,14 @@ def build_hard_results_df(
                 "recall": float(recall),
                 "runtime": float(runtime),
                 "qps": 1.0 / float(runtime) if runtime > 0 else np.nan,
+                "dist_comps": float(dist_comps[i]) if i < len(dist_comps) else np.nan,
                 "hyperparam": params["hyperparam"],
                 "hyperparam_name": params["hyperparam_name"],
                 "hardness": hardness,
             }
             if idx_type == "hnsw":
                 row["m"] = params["m"]
+                row["ef_construction"] = params["ef_construction"]
                 row["ef_search"] = params["ef_search"]
             elif idx_type == "ivf":
                 row["clusters"] = params["clusters"]
@@ -328,8 +335,11 @@ def attach_gls_est(df: pd.DataFrame, gls_est_path: Path) -> pd.DataFrame:
         return df
     est = est.rename(columns={"gls_correlation": "gls_correlation_est", "q_id": "query_id_num"})
     keep = ["query_id_num", "gls_correlation_est"]
+    keep += [c for c in est.columns if c.startswith("gls_correlation_")]
     if "filter" in est.columns:
         keep.append("filter")
+    # gls_correlation_est starts with the same prefix; don't duplicate it.
+    keep = list(dict.fromkeys(keep))
     merged = df.merge(est[keep], on="query_id_num", how="left", suffixes=("", "_estfile"))
     return merged
 
@@ -355,11 +365,11 @@ def assign_tertiles(series: pd.Series) -> tuple[pd.Series, dict]:
     return labels, edges
 
 
-# Metric → (label, RGB base hue). Tertiles use light / mid / dark shades of that hue.
+# Drawing only: Post_Hardness (red) + estimated GLS (green). Exact GLS is not plotted.
+# Tertiles use light / mid / dark shades of that hue.
 METRIC_SPECS = [
-    ("post_hardness", "Post_Hardness", (0.75, 0.12, 0.12)),          # red
-    ("gls_correlation", "exact GLS", (0.12, 0.30, 0.72)),             # blue
-    ("gls_correlation_est", "estimated GLS (ρ̂)", (0.12, 0.55, 0.22)),  # green
+    ("post_hardness", "Post_Hardness", (0.75, 0.12, 0.12)),  # red
+    ("gls_correlation_est", "GLS est", (0.12, 0.55, 0.22)),  # green
 ]
 
 # low → light, mid → medium, high → dark (lerp toward white / black)
@@ -389,12 +399,17 @@ def _algo_slug(algo: str) -> str:
 
 
 def _hp_curve(adf: pd.DataFrame) -> pd.DataFrame:
-    return (
+    curve = (
         adf.groupby("hyperparam", dropna=False)
-        .agg(mean_recall=("recall", "mean"), mean_qps=("qps", "mean"))
+        .agg(
+            mean_recall=("recall", "mean"),
+            total_runtime_s=("runtime", "sum"),
+            n=("runtime", "count"),
+        )
         .reset_index()
-        .sort_values("mean_recall")
     )
+    curve["mean_qps"] = curve["n"] / curve["total_runtime_s"]
+    return curve.sort_values("mean_recall")
 
 
 def _attach_tertile(df: pd.DataFrame, metric_col: str) -> tuple[pd.DataFrame, dict] | tuple[None, None]:
@@ -411,78 +426,12 @@ def _attach_tertile(df: pd.DataFrame, metric_col: str) -> tuple[pd.DataFrame, di
     return out, edges
 
 
-def plot_tertile_qps_recall(
-    df: pd.DataFrame,
-    metric_col: str,
-    metric_label: str,
-    output_path: Path,
-    recall_target: float = RECALL_TARGET,
-    algos: list[str] | None = None,
-):
-    """Legacy 3-panel overview (all algos) by tertiles of one metric."""
-    tagged, edges = _attach_tertile(df, metric_col)
-    if tagged is None:
-        print(f"Skipping tertile plot {output_path.name}: missing {metric_col}")
-        return None
-
-    if algos is None:
-        algos = _present_algos(
-            tagged, [a for a in FAISS_ALL_ALGOS if a in ANN_METHODS] + list(ANN_METHODS)
-        )
-    algos = _present_algos(tagged, algos)
-
-    # One base color per algorithm; tertiles = light / mid / dark shades.
-    algo_bases = {
-        "hnsw(faiss)": (0.18, 0.70, 0.40),
-        "hnsw(faiss)-post": (0.10, 0.50, 0.28),
-        "faiss-ivf": (0.10, 0.30, 0.55),
-        "faiss-ivf-post": (0.20, 0.50, 0.80),
-        "pgvector": (0.25, 0.45, 0.90),
-        "pgvector_ivf": (0.55, 0.30, 0.70),
-        "faiss-flat": (0.75, 0.15, 0.15),
-        "pgvector_bf": (0.55, 0.10, 0.10),
-    }
-
-    fig, ax = plt.subplots(figsize=(7.5, 5.5))
-    for algo in algos:
-        base = algo_bases.get(algo, (0.3, 0.3, 0.3))
-        for tertile in ["low", "mid", "high"]:
-            sub = tagged[(tagged["tertile"] == tertile) & (tagged["algorithm"] == algo)]
-            if sub.empty:
-                continue
-            curve = _hp_curve(sub)
-            color = _shade_rgb(base, _TERTILE_SHADE[tertile])
-            ax.plot(
-                curve["mean_recall"],
-                curve["mean_qps"],
-                "-o",
-                markersize=3,
-                color=color,
-                alpha=0.9,
-                label=f"{plan_label(algo)} · {tertile}",
-            )
-    ax.axvline(recall_target, color="gray", linestyle="--", alpha=0.6)
-    ax.set_xlabel("Mean recall")
-    ax.set_ylabel("Mean QPS")
-    ax.set_yscale("log")
-    ax.set_title(f"QPS–recall by {metric_label} tertiles (shade: low→light, high→dark)")
-    ax.grid(True, alpha=0.3)
-    ax.legend(fontsize=7, ncol=2, loc="best")
-    fig.tight_layout()
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=200, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved tertile frontier: {output_path}")
-    return edges
-
-
 def _draw_algo_tertile_panel(
     ax,
     algo: str,
     metric_frames: list,
-    recall_target: float,
 ) -> bool:
-    """Draw metric×tertile QPS–recall curves for one algorithm onto ``ax``."""
+    """Draw Post_Hardness / estimated-GLS tertile QPS–recall curves for one algorithm."""
     any_curve = False
     for _col, label, hue, tagged, _edges in metric_frames:
         adf_all = tagged[tagged["algorithm"] == algo]
@@ -507,34 +456,8 @@ def _draw_algo_tertile_panel(
                 label=f"{label} · {tertile}",
             )
             any_curve = True
-            if algo in ANN_METHODS:
-                sub_best = find_best_hyperparams(sub, recall_target, algos=[algo])
-                if not sub_best.empty:
-                    best = sub_best.iloc[0]
-                    ax.scatter(
-                        [best["mean_recall"]],
-                        [best["mean_qps"]],
-                        s=70,
-                        marker="*",
-                        color=color,
-                        zorder=5,
-                        edgecolors="white",
-                        linewidths=0.3,
-                    )
-            else:
-                ax.scatter(
-                    [curve["mean_recall"].iloc[-1]],
-                    [curve["mean_qps"].iloc[-1]],
-                    s=55,
-                    marker="s",
-                    color=color,
-                    zorder=5,
-                    edgecolors="white",
-                    linewidths=0.3,
-                )
-    ax.axvline(recall_target, color="gray", linestyle="--", alpha=0.55)
     ax.set_xlabel("Mean recall")
-    ax.set_ylabel("Mean QPS")
+    ax.set_ylabel("Aggregate workload QPS")
     ax.set_yscale("log")
     ax.grid(True, alpha=0.3)
     return any_curve
@@ -543,19 +466,14 @@ def _draw_algo_tertile_panel(
 def plot_tertile_qps_recall_per_algorithm(
     df: pd.DataFrame,
     output_dir: Path,
-    recall_target: float = RECALL_TARGET,
     algos: list[str] | None = None,
 ) -> dict[str, dict]:
-    """One multi-subplot figure: subplot per algorithm.
+    """One figure per algorithm: Post_Hardness (red) and estimated GLS (green) tertiles.
 
-    Within each subplot:
-      - Post_Hardness  → shades of red   (low light → high dark)
-      - exact GLS      → shades of blue
-      - estimated GLS  → shades of green
+    Shade: low → light, mid → base, high → dark. Pre and post are separate files.
+    Exact GLS is not drawn. No recall-target vline or chosen-HP markers.
 
-    Writes:
-      ``output_dir / qps_recall_tertiles_by_algo.png``
-      and per-algo copies under ``qps_recall_tertiles_per_algo/``.
+    Writes ``output_dir / qps_recall_tertiles_per_algo/{slug}.png`` (and ``.pdf``).
     """
     if algos is None:
         candidate = (
@@ -576,6 +494,13 @@ def plot_tertile_qps_recall_per_algorithm(
     for col, label, hue in METRIC_SPECS:
         tagged, edges = _attach_tertile(df, col)
         if tagged is None:
+            if col == "gls_correlation_est":
+                print(
+                    "Skipping estimated-GLS tertile curves: missing gls_correlation_est "
+                    "(not falling back to exact GLS)"
+                )
+            else:
+                print(f"Skipping tertile curves for {label}: missing {col}")
             continue
         metric_frames.append((col, label, hue, tagged, edges))
         edges_out[col] = edges
@@ -584,64 +509,21 @@ def plot_tertile_qps_recall_per_algorithm(
         print("No metrics/algorithms available for per-algorithm tertile plots")
         return edges_out
 
-    n = len(algos)
-    ncols = 2 if n > 1 else 1
-    nrows = int(np.ceil(n / ncols))
-    fig, axes = plt.subplots(
-        nrows, ncols, figsize=(6.2 * ncols, 4.6 * nrows), sharex=False, sharey=False
-    )
-    axes_flat = np.atleast_1d(axes).ravel()
-
-    legend_handles = None
-    legend_labels = None
-    for ax, algo in zip(axes_flat, algos):
-        _draw_algo_tertile_panel(ax, algo, metric_frames, recall_target)
-        ax.set_title(plan_label(algo), fontsize=11)
-        if legend_handles is None:
-            legend_handles, legend_labels = ax.get_legend_handles_labels()
-
-    for ax in axes_flat[len(algos) :]:
-        ax.set_visible(False)
-
-    fig.suptitle(
-        "QPS–recall by metric tertiles per algorithm\n"
-        "red = Post_Hardness · blue = exact GLS · green = estimated GLS "
-        "(shade: low→light, mid, high→dark)",
-        fontsize=12,
-    )
-    if legend_handles:
-        fig.legend(
-            legend_handles,
-            legend_labels,
-            loc="lower center",
-            ncol=3,
-            fontsize=8,
-            frameon=True,
-            bbox_to_anchor=(0.5, -0.02),
-        )
-    fig.tight_layout(rect=[0, 0.06, 1, 0.95])
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-    combo_path = output_dir / "qps_recall_tertiles_by_algo.png"
-    fig.savefig(combo_path, dpi=200, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved multi-subplot tertile frontier: {combo_path}")
-
     out_dir = output_dir / "qps_recall_tertiles_per_algo"
     out_dir.mkdir(parents=True, exist_ok=True)
     for algo in algos:
-        mono, mono_ax = plt.subplots(figsize=(6.5, 5.0))
-        _draw_algo_tertile_panel(mono_ax, algo, metric_frames, recall_target)
-        mono_ax.set_title(
-            f"{plan_label(algo)} — QPS–recall by metric tertiles\n"
-            "red=Post_H · blue=GLS exact · green=GLS est (shade=low→high)"
+        fig, ax = plt.subplots(figsize=(6.5, 5.0))
+        _draw_algo_tertile_panel(ax, algo, metric_frames)
+        ax.set_title(
+            f"{plan_label(algo)} — QPS–recall by Post_Hardness (red) and estimated GLS (green) tertiles"
         )
-        mono_ax.legend(fontsize=8, loc="best")
-        mono.tight_layout()
-        path = out_dir / f"{_algo_slug(algo)}.png"
-        mono.savefig(path, dpi=200, bbox_inches="tight")
-        plt.close(mono)
-        print(f"Saved per-algo tertile frontier: {path}")
+        ax.legend(fontsize=8, loc="best")
+        fig.tight_layout()
+        stem = out_dir / _algo_slug(algo)
+        fig.savefig(stem.with_suffix(".png"), dpi=200, bbox_inches="tight")
+        fig.savefig(stem.with_suffix(".pdf"), bbox_inches="tight")
+        plt.close(fig)
+        print(f"Saved per-algo tertile frontier: {stem.with_suffix('.png')}")
 
     return edges_out
 
@@ -655,132 +537,114 @@ def run_analysis(
     output_dir: Path,
     gls_est_path: Path | None,
     recall_target: float,
+    rebuild_csv: bool = False,
 ) -> dict:
     output_dir.mkdir(parents=True, exist_ok=True)
-    print(f"Building hard results DF: {hardness}/{table} from {results_dir}")
-    df = build_hard_results_df(results_dir, root_data, dataset_size, table, hardness)
-    if df.empty:
-        print("No results found!")
-        return {"ok": False, "missing": ["all_query_results.csv"]}
+    tag_dir = output_dir / recall_tag(recall_target)
+    tag_dir.mkdir(parents=True, exist_ok=True)
 
-    if gls_est_path is not None:
-        df = attach_gls_est(df, gls_est_path)
-
-    df.to_csv(output_dir / "all_query_results.csv", index=False)
-    print(f"Saved {output_dir / 'all_query_results.csv'} ({len(df)} rows)")
+    csv_path = output_dir / "all_query_results.csv"
+    reused_csv = csv_path.is_file() and not rebuild_csv
+    if reused_csv:
+        print(f"Reusing {csv_path}")
+        df = pd.read_csv(csv_path)
+        if df.empty:
+            print("No results found!")
+            return {"ok": False, "missing": ["all_query_results.csv"]}
+        print(f"  {len(df)} rows")
+    else:
+        print(f"Building hard results DF: {hardness}/{table} from {results_dir}")
+        df = build_hard_results_df(results_dir, root_data, dataset_size, table, hardness)
+        if df.empty:
+            print("No results found!")
+            return {"ok": False, "missing": ["all_query_results.csv"]}
+        if gls_est_path is not None:
+            df = attach_gls_est(df, gls_est_path)
+        df.to_csv(csv_path, index=False)
+        print(f"Saved {csv_path} ({len(df)} rows)")
 
     # Estimated-GLS variant in the exact layout qo_prototype.py expects:
     # a sibling gls_est/all_query_results.csv whose gls_correlation column
     # holds rho-hat instead of the exact value.
-    if "gls_correlation_est" in df.columns and df["gls_correlation_est"].notna().any():
+    has_est = "gls_correlation_est" in df.columns and df["gls_correlation_est"].notna().any()
+    est_csv = output_dir / "gls_est" / "all_query_results.csv"
+    if has_est and (rebuild_csv or not reused_csv or not est_csv.is_file()):
         est_dir = output_dir / "gls_est"
         est_dir.mkdir(parents=True, exist_ok=True)
         df_est = df.copy()
         df_est["gls_correlation"] = df_est["gls_correlation_est"]
-        df_est.to_csv(est_dir / "all_query_results.csv", index=False)
-        print(f"Saved {est_dir / 'all_query_results.csv'} ({len(df_est)} rows)")
+        df_est.to_csv(est_csv, index=False)
+        print(f"Saved {est_csv} ({len(df_est)} rows)")
 
-    bf_summary = verify_brute_force(df)
-    bf_summary.to_csv(output_dir / "brute_force_recall_check.csv", index=False)
-    print(bf_summary.to_string(index=False))
+    bf_path = output_dir / "brute_force_recall_check.csv"
+    if rebuild_csv or not reused_csv or not bf_path.is_file():
+        bf_summary = verify_brute_force(df)
+        bf_summary.to_csv(bf_path, index=False)
+        print(bf_summary.to_string(index=False))
 
+    k10 = df_is_k10_only(df)
     best_hp = find_best_hyperparams(df, recall_target)
-    best_hp.to_csv(output_dir / "best_hyperparameters.csv", index=False)
+    best_hp.to_csv(tag_dir / "best_hyperparameters.csv", index=False)
 
     hp_sweep, hp_recs = analyze_hyperparam_recommendations(df, recall_target)
-    hp_sweep.to_csv(output_dir / "hyperparam_sweep.csv", index=False)
-    hp_recs.to_csv(output_dir / "hyperparam_recommendations.csv", index=False)
+    sweep_path = output_dir / "hyperparam_sweep.csv"
+    if rebuild_csv or not reused_csv or not sweep_path.is_file():
+        hp_sweep.to_csv(sweep_path, index=False)
+    hp_recs.to_csv(tag_dir / "hyperparam_recommendations.csv", index=False)
 
     speedup_df = compute_system_oracle_speedup(df, best_hp, recall_target)
-    speedup_df.to_csv(output_dir / "system_oracle_speedup.csv", index=False)
-    plot_system_speedup(speedup_df, output_dir / "system_oracle_speedup.png", recall_target)
-
-    generate_scatter_plots(df, best_hp, output_dir, recall_target, gls_source="exact")
-    plot_qps_recall_frontier(df, best_hp, output_dir, recall_target)
-    plot_faiss_all_qps_recall_frontier(df, best_hp, output_dir, recall_target)
-
-    # Tertile frontiers — per-metric overview (algo shades) + per-algorithm
-    # (metric hue × tertile shade) plots.
-    edges_post = plot_tertile_qps_recall(
-        df,
-        "post_hardness",
-        "Post_Hardness",
-        output_dir / "qps_recall_by_post_hardness_tertiles.png",
-        recall_target,
+    speedup_df.to_csv(tag_dir / "system_oracle_speedup.csv", index=False)
+    plot_system_speedup(
+        speedup_df, tag_dir / "system_oracle_speedup.png", recall_target, k10_footnote=k10
     )
-    if edges_post:
-        pd.DataFrame([edges_post]).to_csv(
-            output_dir / "tertile_edges_post_hardness.csv", index=False
-        )
 
-    edges_gls = plot_tertile_qps_recall(
-        df,
-        "gls_correlation",
-        "exact GLS",
-        output_dir / "qps_recall_by_gls_exact_tertiles.png",
-        recall_target,
+    generate_scatter_plots(
+        df, best_hp, tag_dir, recall_target, gls_source="exact", k10_footnote=k10
     )
-    if edges_gls:
-        pd.DataFrame([edges_gls]).to_csv(
-            output_dir / "tertile_edges_gls_exact.csv", index=False
-        )
+    plot_qps_recall_frontier(df, best_hp, tag_dir, recall_target, k10_footnote=k10)
+    plot_faiss_all_qps_recall_frontier(df, best_hp, tag_dir, recall_target, k10_footnote=k10)
 
-    deferred_est = False
-    if "gls_correlation_est" in df.columns and df["gls_correlation_est"].notna().any():
-        edges_est = plot_tertile_qps_recall(
-            df,
-            "gls_correlation_est",
-            "estimated GLS (ρ̂)",
-            output_dir / "qps_recall_by_gls_est_tertiles.png",
-            recall_target,
-        )
-        if edges_est:
-            pd.DataFrame([edges_est]).to_csv(
-                output_dir / "tertile_edges_gls_est.csv", index=False
+    # Tertile frontiers — one figure per algorithm (Post_Hardness red + GLS est green).
+    # Exact GLS edges are written for other consumers but not plotted.
+    # Generated once at the workload root (not recall-target dependent).
+    tertile_dir = output_dir / "qps_recall_tertiles_per_algo"
+    tertile_present = tertile_dir.is_dir() and any(tertile_dir.glob("*.png"))
+    write_tertiles = rebuild_csv or not tertile_present
+    if write_tertiles:
+        _tagged_exact, edges_gls_exact = _attach_tertile(df, "gls_correlation")
+        if edges_gls_exact:
+            pd.DataFrame([edges_gls_exact]).to_csv(
+                output_dir / "tertile_edges_gls_exact.csv", index=False
             )
+
+        per_algo_edges = plot_tertile_qps_recall_per_algorithm(df, output_dir)
+        for col, edges in per_algo_edges.items():
+            name = {
+                "post_hardness": "tertile_edges_post_hardness.csv",
+                "gls_correlation_est": "tertile_edges_gls_est.csv",
+            }.get(col)
+            if name:
+                pd.DataFrame([edges]).to_csv(output_dir / name, index=False)
     else:
-        deferred_est = True
-        print(
-            f"Deferred estimated-GLS tertiles: missing {gls_est_path}"
-            if gls_est_path
-            else "Deferred estimated-GLS tertiles: no est path"
-        )
+        print(f"Skipping tertile plots (already present under {tertile_dir})")
 
-    per_algo_edges = plot_tertile_qps_recall_per_algorithm(
-        df, output_dir, recall_target
-    )
-    # Prefer edges from the per-algo pass when present (same splits).
-    for col, edges in per_algo_edges.items():
-        name = {
-            "post_hardness": "tertile_edges_post_hardness.csv",
-            "gls_correlation": "tertile_edges_gls_exact.csv",
-            "gls_correlation_est": "tertile_edges_gls_est.csv",
-        }.get(col)
-        if name:
-            pd.DataFrame([edges]).to_csv(output_dir / name, index=False)
-
-    required = [
-        "all_query_results.csv",
-        "best_hyperparameters.csv",
-        "best_plan_per_query.csv",
-        "qps_recall_by_post_hardness_tertiles.png",
-        "qps_recall_by_gls_exact_tertiles.png",
-        "qps_recall_tertiles_by_algo.png",
-        "qps_recall_tertiles_per_algo",
-    ]
+    deferred_est = not has_est
     missing = []
-    for r in required:
-        p = output_dir / r
-        if r == "qps_recall_tertiles_per_algo":
-            if not p.is_dir() or not any(p.glob("*.png")):
-                missing.append(r)
-        elif not p.is_file():
-            missing.append(r)
+    if not csv_path.is_file():
+        missing.append("all_query_results.csv")
+    present_slugs = {_algo_slug(a) for a in df["algorithm"].dropna().unique()}
+    have = {x.stem for x in tertile_dir.glob("*.png")} if tertile_dir.is_dir() else set()
+    if not present_slugs or not present_slugs.issubset(have):
+        missing.append("qps_recall_tertiles_per_algo")
+    for r in ("best_hyperparameters.csv", "best_plan_per_query.csv"):
+        if not (tag_dir / r).is_file():
+            missing.append(f"{recall_tag(recall_target)}/{r}")
     return {
         "ok": len(missing) == 0,
         "missing": missing,
         "deferred_gls_est": deferred_est,
         "n_rows": len(df),
+        "tag_dir": str(tag_dir),
     }
 
 
@@ -805,6 +669,11 @@ def main():
         help="Optional ρ̂ CSV (default: data/.../stats/gls_est_{hardness}_{table}.csv)",
     )
     parser.add_argument("--recall-target", type=float, default=RECALL_TARGET)
+    parser.add_argument(
+        "--rebuild-csv",
+        action="store_true",
+        help="Rebuild all_query_results.csv from HDF5 even if it already exists",
+    )
     args = parser.parse_args()
 
     root_data = ROOT / "data" / "datasets"
@@ -843,6 +712,7 @@ def main():
         output_dir,
         gls_est if gls_est.is_file() else None,
         args.recall_target,
+        rebuild_csv=args.rebuild_csv,
     )
     if not status["ok"]:
         print(f"INCOMPLETE: missing {status['missing']}")

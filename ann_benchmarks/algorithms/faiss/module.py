@@ -1,3 +1,4 @@
+import os
 import sys
 
 sys.path.append("install/lib-faiss")  # noqa
@@ -7,7 +8,13 @@ import sklearn.preprocessing
 
 from faiss import swig_ptr
 from ..base.module import BaseANN
-from ...attrs import coerce_attrs, filter_mask_from_attrs
+from ...attrs import (
+    _is_clause_list,
+    coerce_attrs,
+    filter_mask_from_attrs,
+    postfilter_candidates_from_attrs,
+    selectivity_from_attrs,
+)
 from .postfilter import apply_post_filter, compute_search_k, filter_mask_from_fvalue
 
 
@@ -114,8 +121,30 @@ class FaissIVF(Faiss):
         if X.dtype != numpy.float32:
             X = X.astype(numpy.float32)
 
-        self.index.train(X)
-        self.index.add(X)
+        read_cache_path = None
+        write_cache_path = None
+        if dataset_type == "cases":
+            data_cache_dir = os.path.join("data", "datasets", "CaseLaw_7M", "index_cache")
+            res_cache_dir = os.path.join("results", "CaseLaw_7M_native_cases", ".index_cache")
+            os.makedirs(res_cache_dir, exist_ok=True)
+            fname = f"ivf_{self._metric}_n{X.shape[0]}_d{d}_nlist{nlist}.faiss"
+            p1 = os.path.join(data_cache_dir, fname)
+            p2 = os.path.join(res_cache_dir, fname)
+            read_cache_path = p1 if os.path.isfile(p1) else (p2 if os.path.isfile(p2) else None)
+            write_cache_path = p2
+
+        if read_cache_path:
+            print(f"FaissIVF: loading cached index from {read_cache_path}", flush=True)
+            self.index = faiss.read_index(read_cache_path)
+        else:
+            X = numpy.asarray(X, dtype=numpy.float32)
+            self.index.train(X)
+            self.index.add(X)
+            if write_cache_path:
+                tmp_path = f"{write_cache_path}.{os.getpid()}.part"
+                faiss.write_index(self.index, tmp_path)
+                os.replace(tmp_path, write_cache_path)
+                print(f"FaissIVF: saved cached index to {write_cache_path}", flush=True)
         
 
     def set_query_arguments(self, n_probe):
@@ -145,8 +174,16 @@ class FaissIVFPostFilter(FaissIVF):
         attrs = _attrs_for_query(self, X_attr)
         if "_single" in attrs and len(attrs) == 1:
             filter_mask = filter_mask_from_fvalue(attrs["_single"], fvalue)
-        else:
-            filter_mask = filter_mask_from_attrs(attrs, fvalue)
+            selectivity = float(filter_mask.mean())
+            search_k = compute_search_k(n, selectivity)
+            _, I = self.index.search(v, search_k)
+            return apply_post_filter(I[0], filter_mask, n)
+        if _is_clause_list(fvalue):
+            selectivity = selectivity_from_attrs(attrs, fvalue)
+            search_k = compute_search_k(n, selectivity)
+            _, I = self.index.search(v, search_k)
+            return postfilter_candidates_from_attrs(attrs, fvalue, I[0], n)
+        filter_mask = filter_mask_from_attrs(attrs, fvalue)
         selectivity = float(filter_mask.mean())
         search_k = compute_search_k(n, selectivity)
         _, I = self.index.search(v, search_k)

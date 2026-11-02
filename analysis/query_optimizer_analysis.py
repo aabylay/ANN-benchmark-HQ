@@ -4,10 +4,14 @@ Query optimizer analysis for filtered ANN benchmarks.
 
 1. Build per-query results CSV from HDF5 benchmark outputs.
 2. Verify brute-force (faiss-flat, pgvector_bf) recall = 1.0.
-3. For each ANN method, pick the hyperparameter that maximizes QPS subject to
-   mean recall >= 0.95.
+3. For each ANN method, pick the hyperparameter that maximizes aggregate
+   sequential-workload QPS subject to mean recall >= the recall target (default
+   0.95; also 0.80, 0.90, and 0.99).
 4. For each query, pick the best plan among tuned ANN methods and brute-force.
 5. Plot selectivity vs GLS correlation colored by best plan.
+
+Shared CSVs stay at ``--output-dir``. Threshold-dependent plots/CSVs nest under
+``{output-dir}/{recall_tag(target)}/`` (e.g. ``r095/``).
 """
 
 from __future__ import annotations
@@ -27,7 +31,41 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from ann_benchmarks.plotting.metrics import get_recall_values, knn_threshold
 
 RECALL_TARGET = 0.95
+CAMPAIGN_RECALL_TARGETS = (0.80, 0.90, 0.95, 0.99)
 K_DEFAULT = 10
+K10_RECALL_FOOTNOTE = (
+    "k=10 recall ∈ {0, 0.1, …, 1}; R≥0.80 is 8/10+, R≥0.90 is 9/10+, "
+    "R≥0.95 and R≥0.99 both require 10/10 hits."
+)
+
+
+def recall_tag(target: float) -> str:
+    """0.8 -> r080, 0.9 -> r090, 0.95 -> r095, 0.99 -> r099."""
+    return f"r{round(float(target) * 100):03d}"
+
+
+def format_recall_target(target: float) -> str:
+    return f"{float(target):g}"
+
+
+def df_is_k10_only(df: pd.DataFrame) -> bool:
+    if df is None or df.empty or "k" not in df.columns:
+        return False
+    ks = {int(x) for x in pd.unique(df["k"].dropna())}
+    return ks == {10}
+
+
+def apply_k10_footnote(fig, enabled: bool) -> None:
+    if not enabled:
+        return
+    fig.text(
+        0.5,
+        -0.02,
+        K10_RECALL_FOOTNOTE,
+        ha="center",
+        fontsize=7.5,
+        style="italic",
+    )
 
 ANN_METHODS = {
     "hnsw(faiss)": {"label": "FAISS HNSW pre", "index": "HNSW", "system": "FAISS", "filter": "pre"},
@@ -103,7 +141,7 @@ def _plans_at_tuned_hyperparams(
     parts: list[pd.DataFrame] = []
     if ann_algos:
         ann = df[df["algorithm"].isin(ann_algos)].copy()
-        ann = ann[ann.apply(lambda r: r["hyperparam"] == hp_map[r["algorithm"]], axis=1)]
+        ann = ann[ann["hyperparam"] == ann["algorithm"].map(hp_map)]
         parts.append(ann)
     if bf_algos:
         parts.append(df[df["algorithm"].isin(bf_algos)].copy())
@@ -209,6 +247,10 @@ def process_hdf5_file(
     with h5py.File(file, "r") as f:
         distances = f["distances"][:]
         times = f["times"][:]
+        if "dist_comps" in f:
+            dist_comps = np.asarray(f["dist_comps"][:], dtype=np.float64)
+        else:
+            dist_comps = np.full(len(times), np.nan, dtype=np.float64)
 
     filter_id = params["filter_id"]
     if filter_id >= len(selectivities):
@@ -233,9 +275,11 @@ def process_hdf5_file(
             "recall": recall,
             "runtime": runtime,
             "qps": 1.0 / runtime if runtime > 0 else np.nan,
+            "dist_comps": float(dist_comps[i]) if i < len(dist_comps) else np.nan,
         }
         if idx_type == "hnsw":
             row["m"] = params["m"]
+            row["ef_construction"] = params["ef_construction"]
             row["ef_search"] = params["ef_search"]
             row["hyperparam"] = params["ef_search"]
             row["hyperparam_name"] = "ef_search"
@@ -309,6 +353,7 @@ def attach_gls_correlation(
     )
 
     merge_cols = ["query_id_num", "query_type", "filter", "gls_correlation"]
+    merge_cols += [c for c in stats.columns if c.startswith("gls_correlation_")]
     if "estimator" in stats.columns:
         merge_cols.append("estimator")
     merged = df.merge(
@@ -332,9 +377,16 @@ def find_best_hyperparams(
     ann_df = df[df["algorithm"].isin(target_algos)].copy()
     grouped = (
         ann_df.groupby(["algorithm", "hyperparam", "hyperparam_name"], dropna=False)
-        .agg(mean_recall=("recall", "mean"), mean_qps=("qps", "mean"), n=("recall", "count"))
+        .agg(
+            mean_recall=("recall", "mean"),
+            total_runtime_s=("runtime", "sum"),
+            mean_per_query_qps=("qps", "mean"),
+            n=("recall", "count"),
+        )
         .reset_index()
     )
+    # Sequential workload throughput is n / sum(latency), not mean(1 / latency).
+    grouped["mean_qps"] = grouped["n"] / grouped["total_runtime_s"]
 
     best_rows = []
     for algo in target_algos:
@@ -383,18 +435,20 @@ def find_best_hyperparams(
 
 def _hyperparam_sweep_table(df: pd.DataFrame) -> pd.DataFrame:
     ann_df = df[df["algorithm"].isin(ANN_METHODS)].copy()
-    return (
+    sweep = (
         ann_df.groupby(["algorithm", "hyperparam", "hyperparam_name"], dropna=False)
         .agg(
             mean_recall=("recall", "mean"),
             min_recall=("recall", "min"),
-            mean_qps=("qps", "mean"),
-            mean_runtime_ms=("runtime", lambda s: s.mean() * 1000),
+            total_runtime_s=("runtime", "sum"),
+            mean_per_query_qps=("qps", "mean"),
+            mean_runtime_ms=("runtime", lambda values: values.mean() * 1000),
             n=("recall", "count"),
         )
         .reset_index()
-        .sort_values(["algorithm", "hyperparam"])
     )
+    sweep["mean_qps"] = sweep["n"] / sweep["total_runtime_s"]
+    return sweep.sort_values(["algorithm", "hyperparam"])
 
 
 def analyze_hyperparam_recommendations(
@@ -513,39 +567,54 @@ def _query_runtimes_for_system(
     ivf_algo = _primary_algo(ann_algos, "IVF")
 
     keys = ["query_id", "query_type", "filter_id"]
-    records = []
-    for key_vals, group in ann.groupby(keys):
-        hnsw = group[group["algorithm"] == hnsw_algo]
-        ivf = group[group["algorithm"] == ivf_algo]
-        if hnsw.empty or ivf.empty:
-            continue
-        h = hnsw.iloc[0]
-        v = ivf.iloc[0]
+    hnsw = (
+        ann[ann["algorithm"] == hnsw_algo]
+        .drop_duplicates(keys)
+        .set_index(keys)
+    )
+    ivf = (
+        ann[ann["algorithm"] == ivf_algo]
+        .drop_duplicates(keys)
+        .set_index(keys)
+    )
+    if hnsw.empty or ivf.empty:
+        return pd.DataFrame()
+    common_idx = hnsw.index.intersection(ivf.index)
+    if common_idx.empty:
+        return pd.DataFrame()
+    hnsw = hnsw.loc[common_idx]
+    ivf = ivf.loc[common_idx]
 
-        feasible = group[group["recall"] >= recall_target]
-        if len(feasible):
-            oracle = feasible.sort_values("qps", ascending=False).iloc[0]
-        else:
-            oracle = group.sort_values(["recall", "qps"], ascending=[False, False]).iloc[0]
-
-        records.append(
-            {
-                "query_id": key_vals[0],
-                "query_type": key_vals[1],
-                "filter_id": key_vals[2],
-                "hnsw_runtime": h["runtime"],
-                "hnsw_qps": h["qps"],
-                "hnsw_recall": h["recall"],
-                "ivf_runtime": v["runtime"],
-                "ivf_qps": v["qps"],
-                "ivf_recall": v["recall"],
-                "oracle_runtime": oracle["runtime"],
-                "oracle_qps": oracle["qps"],
-                "oracle_recall": oracle["recall"],
-                "oracle_plan": plan_label(oracle["algorithm"]),
-            }
+    ann_sub = ann.set_index(keys).loc[common_idx].reset_index()
+    ann_sub["_feas"] = ann_sub["recall"] >= recall_target
+    best_oracle = (
+        ann_sub.sort_values(
+            ["_feas", "qps", "recall"], ascending=[False, False, False], kind="mergesort"
         )
-    return pd.DataFrame(records)
+        .groupby(keys, sort=False)
+        .head(1)
+        .set_index(keys)
+        .loc[common_idx]
+    )
+
+    out = pd.DataFrame(
+        {
+            "query_id": common_idx.get_level_values(0),
+            "query_type": common_idx.get_level_values(1),
+            "filter_id": common_idx.get_level_values(2),
+            "hnsw_runtime": hnsw["runtime"].to_numpy(),
+            "hnsw_qps": hnsw["qps"].to_numpy(),
+            "hnsw_recall": hnsw["recall"].to_numpy(),
+            "ivf_runtime": ivf["runtime"].to_numpy(),
+            "ivf_qps": ivf["qps"].to_numpy(),
+            "ivf_recall": ivf["recall"].to_numpy(),
+            "oracle_runtime": best_oracle["runtime"].to_numpy(),
+            "oracle_qps": best_oracle["qps"].to_numpy(),
+            "oracle_recall": best_oracle["recall"].to_numpy(),
+            "oracle_plan": best_oracle["algorithm"].map(plan_label).to_numpy(),
+        }
+    )
+    return out
 
 
 def compute_system_oracle_speedup(
@@ -573,6 +642,7 @@ def compute_system_oracle_speedup(
             ("all", per_query),
             ("movies", per_query[per_query["query_type"] == "movies"]),
             ("reviews", per_query[per_query["query_type"] == "reviews"]),
+            ("cases", per_query[per_query["query_type"] == "cases"]),
         ]:
             if sub.empty:
                 continue
@@ -600,7 +670,12 @@ def compute_system_oracle_speedup(
     return pd.DataFrame(summary_rows)
 
 
-def plot_system_speedup(speedup_df: pd.DataFrame, output_path: Path, recall_target: float):
+def plot_system_speedup(
+    speedup_df: pd.DataFrame,
+    output_path: Path,
+    recall_target: float,
+    k10_footnote: bool = False,
+):
     """Bar chart of oracle speedup vs always-HNSW and always-IVF per system."""
     plot_df = speedup_df[speedup_df["query_type"] == "all"].copy()
     if plot_df.empty:
@@ -617,7 +692,9 @@ def plot_system_speedup(speedup_df: pd.DataFrame, output_path: Path, recall_targ
     ax.set_xticks(x)
     ax.set_xticklabels(systems)
     ax.set_ylabel("Speedup (total latency ratio)")
-    ax.set_title(f"In-system oracle speedup (recall ≥ {recall_target}, tuned hyperparams)")
+    ax.set_title(
+        f"In-system oracle speedup (recall ≥ {format_recall_target(recall_target)}, tuned hyperparams)"
+    )
     ax.legend()
     ax.grid(True, axis="y", alpha=0.3)
 
@@ -628,6 +705,7 @@ def plot_system_speedup(speedup_df: pd.DataFrame, output_path: Path, recall_targ
                 ax.text(bar.get_x() + bar.get_width() / 2, h, f"{h:.2f}×", ha="center", va="bottom", fontsize=9)
 
     fig.tight_layout()
+    apply_k10_footnote(fig, k10_footnote)
     fig.savefig(output_path, dpi=200, bbox_inches="tight")
     fig.savefig(output_path.with_suffix(".pdf"), bbox_inches="tight")
     plt.close(fig)
@@ -663,30 +741,58 @@ def _pick_best_plan_records(
     recall_target: float,
     include_hyperparam: bool = False,
 ) -> list[dict]:
+    if plan_df.empty:
+        return []
     keys = ["query_id", "query_type", "filter_id"]
-    records = []
-    for key_vals, group in plan_df.groupby(keys):
-        feasible = group[group["recall"] >= recall_target]
-        if len(feasible) == 0:
-            pick = group.sort_values(["recall", "qps"], ascending=[False, False]).iloc[0]
-        else:
-            pick = feasible.sort_values("qps", ascending=False).iloc[0]
-        record = {
-            "query_id": key_vals[0],
-            "query_type": key_vals[1],
-            "filter_id": key_vals[2],
+    feasible = plan_df[plan_df["recall"] >= recall_target]
+    feas_pick = (
+        feasible.sort_values("qps", ascending=False, kind="mergesort")
+        .groupby(keys, sort=False)
+        .head(1)
+        if not feasible.empty
+        else pd.DataFrame(columns=plan_df.columns)
+    )
+    all_keys = plan_df[keys].drop_duplicates()
+    if len(feas_pick):
+        uncovered = all_keys.merge(feas_pick[keys], on=keys, how="left", indicator=True)
+        uncovered = uncovered[uncovered["_merge"] == "left_only"][keys]
+    else:
+        uncovered = all_keys
+    if len(uncovered):
+        fallback_pool = plan_df.merge(uncovered, on=keys, how="inner")
+        fallback = (
+            fallback_pool.sort_values(
+                ["recall", "qps"], ascending=[False, False], kind="mergesort"
+            )
+            .groupby(keys, sort=False)
+            .head(1)
+        )
+        pick = (
+            pd.concat([feas_pick, fallback], ignore_index=True)
+            if len(feas_pick)
+            else fallback
+        )
+    else:
+        pick = feas_pick
+
+    pick = pick.sort_values(keys, kind="mergesort").reset_index(drop=True)
+    out = pd.DataFrame(
+        {
+            "query_id": pick["query_id"],
+            "query_type": pick["query_type"],
+            "filter_id": pick["filter_id"],
             "best_algorithm": pick["algorithm"],
-            "best_plan": plan_label(pick["algorithm"]),
+            "best_plan": pick["algorithm"].map(plan_label),
             "best_recall": pick["recall"],
             "best_qps": pick["qps"],
             "filter_selectivity": pick["filter_selectivity"],
             "gls_correlation": pick["gls_correlation"],
         }
-        if include_hyperparam:
-            record["best_hyperparam"] = int(pick["hyperparam"])
-            record["best_hyperparam_name"] = pick["hyperparam_name"]
-        records.append(record)
-    return records
+    )
+    if include_hyperparam:
+        out["best_hyperparam"] = pick["hyperparam"].astype(int)
+        out["best_hyperparam_name"] = pick["hyperparam_name"]
+    return out.to_dict("records")
 
 
 def pick_best_plan_per_query_for_system(
@@ -732,6 +838,7 @@ def plot_best_plan_scatter(
     oracle_mode: str = "fixed hyperparams",
     recall_target: float = RECALL_TARGET,
     gls_source: str = "exact",
+    k10_footnote: bool = False,
 ):
     plot_df = best_plans.dropna(subset=["filter_selectivity", "gls_correlation"]).copy()
     if plot_df.empty:
@@ -763,12 +870,14 @@ def plot_best_plan_scatter(
         gls_note = ", exact GLS"
     ax.set_ylabel(gls_label)
     ax.set_title(
-        f"Best plan per query (recall ≥ {recall_target}, {oracle_mode}{gls_note}){title_suffix}"
+        f"Best plan per query (recall ≥ {format_recall_target(recall_target)}, "
+        f"{oracle_mode}{gls_note}){title_suffix}"
     )
     ax.axhline(0, color="black", linewidth=0.8, linestyle="--", alpha=0.4)
     ax.legend(title="Best plan", loc="best", fontsize=10)
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
+    apply_k10_footnote(fig, k10_footnote)
     fig.savefig(output_path, dpi=200, bbox_inches="tight")
     fig.savefig(output_path.with_suffix(".pdf"), bbox_inches="tight")
     plt.close(fig)
@@ -781,26 +890,34 @@ def plot_best_plan_by_system(
     output_dir: Path,
     recall_target: float,
     gls_source: str = "exact",
+    k10_footnote: bool = False,
 ):
     """One scatter per system × query type (4 plots: FAISS/pgvector × movies/reviews)."""
     for system, algos in SYSTEMS.items():
         algos = _present_algos(df, algos)
         system_plans = pick_best_plan_per_query_for_system(df, best_hp, algos, recall_target)
+        if system_plans.empty:
+            continue
         plan_labels = [plan_label(a) for a in algos]
-        for qt in ["movies", "reviews"]:
+        for qt in ["movies", "reviews", "cases"]:
             sub = system_plans[system_plans["query_type"] == qt]
+            if sub.empty:
+                continue
             plot_best_plan_scatter(
                 sub,
                 output_dir / f"best_plan_scatter_{system.lower()}_{qt}.png",
                 title_suffix=f" — {system}, {qt}",
                 plan_order=plan_labels,
+                recall_target=recall_target,
                 gls_source=gls_source,
+                k10_footnote=k10_footnote,
             )
 
 
 def plot_faiss_all_best_plans(
     df: pd.DataFrame, best_hp: pd.DataFrame, output_dir: Path, recall_target: float,
     gls_source: str = "exact",
+    k10_footnote: bool = False,
 ):
     """Scatter plots for best plan among all FAISS plans (pre/post + BF)."""
     algos = _present_algos(df, FAISS_ALL_ALGOS)
@@ -819,24 +936,34 @@ def plot_faiss_all_best_plans(
     print(f"  FAISS-all best plans: {len(faiss_plans)} queries")
     print(faiss_plans["best_plan"].value_counts().to_string())
 
-    for qt in ["movies", "reviews"]:
+    for qt in ["movies", "reviews", "cases"]:
         sub = faiss_plans[faiss_plans["query_type"] == qt]
+        if sub.empty:
+            continue
         plot_best_plan_scatter(
             sub,
             output_dir / f"best_plan_scatter_faiss_all_{qt}.png",
             title_suffix=f" — FAISS (all plans), {qt}",
             plan_order=plan_labels,
+            recall_target=recall_target,
             gls_source=gls_source,
+            k10_footnote=k10_footnote,
         )
 
     plot_plan_distribution(
         faiss_plans,
         output_dir / "best_plan_by_selectivity_bin_faiss_all.png",
+        recall_target=recall_target,
+        k10_footnote=k10_footnote,
     )
 
 
 def plot_best_plan_by_system_all_hyperparams(
-    df: pd.DataFrame, output_dir: Path, recall_target: float, gls_source: str = "exact"
+    df: pd.DataFrame,
+    output_dir: Path,
+    recall_target: float,
+    gls_source: str = "exact",
+    k10_footnote: bool = False,
 ):
     """Scatter per system × query type using per-query best hyperparameter oracle."""
     for system, algos in SYSTEMS.items():
@@ -845,8 +972,10 @@ def plot_best_plan_by_system_all_hyperparams(
         if system_plans.empty:
             continue
         plan_labels = [plan_label(a) for a in algos]
-        for qt in ["movies", "reviews"]:
+        for qt in ["movies", "reviews", "cases"]:
             sub = system_plans[system_plans["query_type"] == qt]
+            if sub.empty:
+                continue
             plot_best_plan_scatter(
                 sub,
                 output_dir / f"best_plan_scatter_{system.lower()}_{qt}_per_query_hp.png",
@@ -855,11 +984,16 @@ def plot_best_plan_by_system_all_hyperparams(
                 oracle_mode="per-query hp oracle",
                 recall_target=recall_target,
                 gls_source=gls_source,
+                k10_footnote=k10_footnote,
             )
 
 
 def plot_faiss_all_best_plans_all_hyperparams(
-    df: pd.DataFrame, output_dir: Path, recall_target: float, gls_source: str = "exact"
+    df: pd.DataFrame,
+    output_dir: Path,
+    recall_target: float,
+    gls_source: str = "exact",
+    k10_footnote: bool = False,
 ):
     """FAISS-all scatter plots with per-query hyperparameter oracle."""
     algos = _present_algos(df, FAISS_ALL_ALGOS)
@@ -878,8 +1012,10 @@ def plot_faiss_all_best_plans_all_hyperparams(
     print(f"  FAISS-all per-query-hp best plans: {len(faiss_plans)} queries")
     print(faiss_plans["best_plan"].value_counts().to_string())
 
-    for qt in ["movies", "reviews"]:
+    for qt in ["movies", "reviews", "cases"]:
         sub = faiss_plans[faiss_plans["query_type"] == qt]
+        if sub.empty:
+            continue
         plot_best_plan_scatter(
             sub,
             output_dir / f"best_plan_scatter_faiss_all_{qt}_per_query_hp.png",
@@ -888,15 +1024,23 @@ def plot_faiss_all_best_plans_all_hyperparams(
             oracle_mode="per-query hp oracle",
             recall_target=recall_target,
             gls_source=gls_source,
+            k10_footnote=k10_footnote,
         )
 
     plot_plan_distribution(
         faiss_plans,
         output_dir / "best_plan_by_selectivity_bin_faiss_all_per_query_hp.png",
+        recall_target=recall_target,
+        k10_footnote=k10_footnote,
     )
 
 
-def plot_plan_distribution(best_plans: pd.DataFrame, output_path: Path):
+def plot_plan_distribution(
+    best_plans: pd.DataFrame,
+    output_path: Path,
+    recall_target: float = RECALL_TARGET,
+    k10_footnote: bool = False,
+):
     """Stacked bar: fraction of best plans by selectivity bin."""
     df = best_plans.dropna(subset=["filter_selectivity"]).copy()
     df["sel_bin"] = pd.cut(
@@ -908,11 +1052,15 @@ def plot_plan_distribution(best_plans: pd.DataFrame, output_path: Path):
     ax = ct.plot(kind="bar", stacked=True, figsize=(10, 6), color=[PLAN_COLORS.get(c, "gray") for c in ct.columns])
     ax.set_xlabel("Selectivity bin")
     ax.set_ylabel("Fraction of queries")
-    ax.set_title("Best plan distribution by selectivity")
+    ax.set_title(
+        f"Best plan distribution by selectivity (recall ≥ {format_recall_target(recall_target)})"
+    )
     ax.legend(title="Best plan", bbox_to_anchor=(1.02, 1))
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=200, bbox_inches="tight")
-    plt.close()
+    fig = ax.get_figure()
+    fig.tight_layout()
+    apply_k10_footnote(fig, k10_footnote)
+    fig.savefig(output_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
     print(f"Saved plan distribution: {output_path}")
 
 
@@ -923,6 +1071,8 @@ def _plot_qps_recall_frontier_panel(
     frontier_colors: dict[str, str],
     title: str,
     output_path: Path,
+    recall_target: float = RECALL_TARGET,
+    k10_footnote: bool = False,
 ):
     """QPS-recall curves grouped by index type (HNSW / IVF panels)."""
     fig, axes = plt.subplots(1, 2, figsize=(14, 6), sharey=True)
@@ -936,10 +1086,15 @@ def _plot_qps_recall_frontier_panel(
                 continue
             curve = (
                 sub.groupby("hyperparam")
-                .agg(mean_recall=("recall", "mean"), mean_qps=("qps", "mean"))
+                .agg(
+                    mean_recall=("recall", "mean"),
+                    total_runtime_s=("runtime", "sum"),
+                    n=("runtime", "count"),
+                )
                 .reset_index()
-                .sort_values("mean_recall")
             )
+            curve["mean_qps"] = curve["n"] / curve["total_runtime_s"]
+            curve = curve.sort_values("mean_recall")
             label = ANN_METHODS[algo]["label"]
             color = frontier_colors.get(label, "gray")
             ax.plot(curve["mean_recall"], curve["mean_qps"], "o-", label=label, color=color)
@@ -949,15 +1104,16 @@ def _plot_qps_recall_frontier_panel(
                 ax.scatter(
                     [best["mean_recall"]], [best["mean_qps"]], s=120, marker="*", color=color, zorder=5
                 )
-        ax.axvline(RECALL_TARGET, color="gray", linestyle="--", alpha=0.6)
+        ax.axvline(recall_target, color="gray", linestyle="--", alpha=0.6)
         ax.set_xlabel("Mean recall")
-        ax.set_ylabel("Mean QPS")
+        ax.set_ylabel("Aggregate workload QPS")
         ax.set_yscale("log")
         ax.set_title(idx_type)
         ax.legend(fontsize=9)
         ax.grid(True, alpha=0.3)
     fig.suptitle(title)
     fig.tight_layout()
+    apply_k10_footnote(fig, k10_footnote)
     fig.savefig(output_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
     print(f"Saved QPS-recall frontier: {output_path}")
@@ -968,8 +1124,11 @@ def plot_qps_recall_frontier(
     best_hp: pd.DataFrame,
     output_dir: Path,
     recall_target: float = RECALL_TARGET,
+    k10_footnote: bool | None = None,
 ):
     """Built-in pre-filter methods + pgvector, one frontier per query type."""
+    if k10_footnote is None:
+        k10_footnote = df_is_k10_only(df)
     frontier_colors = {
         "FAISS HNSW pre": "#2ecc71",
         "FAISS IVF pre": "#1a5276",
@@ -977,7 +1136,8 @@ def plot_qps_recall_frontier(
         "pgvector IVF": "#9b59b6",
     }
     methods = _present_algos(df, _builtin_ann_algos())
-    for qt in ["movies", "reviews"]:
+    rt = format_recall_target(recall_target)
+    for qt in ["movies", "reviews", "cases"]:
         sub_df = df[df["query_type"] == qt]
         if sub_df.empty:
             continue
@@ -987,8 +1147,10 @@ def plot_qps_recall_frontier(
             sub_best_hp,
             methods,
             frontier_colors,
-            f"QPS vs recall — built-in plans, {qt} (★ = chosen hyperparameter)",
+            f"QPS vs recall — built-in plans, {qt} (recall ≥ {rt}; ★ = chosen hyperparameter)",
             output_dir / f"qps_recall_frontier_{qt}.png",
+            recall_target=recall_target,
+            k10_footnote=k10_footnote,
         )
 
 
@@ -997,8 +1159,11 @@ def plot_faiss_all_qps_recall_frontier(
     best_hp: pd.DataFrame,
     output_dir: Path,
     recall_target: float = RECALL_TARGET,
+    k10_footnote: bool | None = None,
 ):
     """QPS-recall curves for all FAISS ANN plans including post-filter, per query type."""
+    if k10_footnote is None:
+        k10_footnote = df_is_k10_only(df)
     algos = _present_algos(df, [a for a in FAISS_ALL_ALGOS if a in ANN_METHODS])
     post_algos = [a for a in algos if ANN_METHODS[a].get("filter") == "post"]
     if not post_algos:
@@ -1011,7 +1176,8 @@ def plot_faiss_all_qps_recall_frontier(
         "FAISS IVF pre": "#1a5276",
         "FAISS IVF post": "#3498db",
     }
-    for qt in ["movies", "reviews"]:
+    rt = format_recall_target(recall_target)
+    for qt in ["movies", "reviews", "cases"]:
         sub_df = df[df["query_type"] == qt]
         if sub_df.empty:
             continue
@@ -1021,8 +1187,10 @@ def plot_faiss_all_qps_recall_frontier(
             sub_best_hp,
             algos,
             frontier_colors,
-            f"QPS vs recall — FAISS all plans, {qt} (★ = chosen hyperparameter)",
+            f"QPS vs recall — FAISS all plans, {qt} (recall ≥ {rt}; ★ = chosen hyperparameter)",
             output_dir / f"qps_recall_frontier_faiss_all_{qt}.png",
+            recall_target=recall_target,
+            k10_footnote=k10_footnote,
         )
 
 
@@ -1032,9 +1200,12 @@ def generate_scatter_plots(
     output_dir: Path,
     recall_target: float,
     gls_source: str = "exact",
+    k10_footnote: bool | None = None,
 ) -> pd.DataFrame:
     """All selectivity-vs-GLS scatter plots and related CSVs under output_dir."""
     output_dir.mkdir(parents=True, exist_ok=True)
+    if k10_footnote is None:
+        k10_footnote = df_is_k10_only(df)
     global_algos = _present_algos(
         df, FAISS_BUILTIN_ALGOS + ["pgvector", "pgvector_ivf", "pgvector_bf"]
     )
@@ -1051,11 +1222,22 @@ def generate_scatter_plots(
         best_plans,
         output_dir / "best_plan_scatter_all.png",
         plan_order=global_plan_labels,
+        recall_target=recall_target,
         gls_source=gls_source,
+        k10_footnote=k10_footnote,
     )
-    plot_best_plan_by_system(df, best_hp, output_dir, recall_target, gls_source=gls_source)
-    plot_plan_distribution(best_plans, output_dir / "best_plan_by_selectivity_bin.png")
-    plot_faiss_all_best_plans(df, best_hp, output_dir, recall_target, gls_source=gls_source)
+    plot_best_plan_by_system(
+        df, best_hp, output_dir, recall_target, gls_source=gls_source, k10_footnote=k10_footnote
+    )
+    plot_plan_distribution(
+        best_plans,
+        output_dir / "best_plan_by_selectivity_bin.png",
+        recall_target=recall_target,
+        k10_footnote=k10_footnote,
+    )
+    plot_faiss_all_best_plans(
+        df, best_hp, output_dir, recall_target, gls_source=gls_source, k10_footnote=k10_footnote
+    )
 
     global_algos_hp = _present_algos(
         df, FAISS_BUILTIN_ALGOS + ["pgvector", "pgvector_ivf", "pgvector_bf"]
@@ -1074,16 +1256,19 @@ def generate_scatter_plots(
         oracle_mode="per-query hp oracle",
         recall_target=recall_target,
         gls_source=gls_source,
+        k10_footnote=k10_footnote,
     )
     plot_best_plan_by_system_all_hyperparams(
-        df, output_dir, recall_target, gls_source=gls_source
+        df, output_dir, recall_target, gls_source=gls_source, k10_footnote=k10_footnote
     )
     plot_plan_distribution(
         best_plans_hp,
         output_dir / "best_plan_by_selectivity_bin_per_query_hp.png",
+        recall_target=recall_target,
+        k10_footnote=k10_footnote,
     )
     plot_faiss_all_best_plans_all_hyperparams(
-        df, output_dir, recall_target, gls_source=gls_source
+        df, output_dir, recall_target, gls_source=gls_source, k10_footnote=k10_footnote
     )
 
     bp = best_plans.dropna(subset=["gls_correlation"]).copy()
@@ -1136,13 +1321,133 @@ def load_gls_estimator_pairs(
         raise ValueError(f"no exact GLS column in {exact_stats_path}")
     exact = exact[["q_id", "query_type", "filter", "rho_exact"]]
 
-    est = pd.read_csv(est_stats_path).rename(columns={"gls_correlation": "rho_hat"})
+    est = pd.read_csv(est_stats_path)
+    tier_cols = [c for c in ("gls_correlation_1", "gls_correlation_10",
+                             "gls_correlation_100") if c in est.columns]
+    est = est.rename(columns={"gls_correlation": "rho_hat"})
     keep = ["q_id", "query_type", "filter", "rho_hat", "selectivity",
-            "latency_us", "n_b", "conf", "capped"]
+            "latency_us", "n_b", "conf", "capped", *tier_cols]
     est = est[[c for c in keep if c in est.columns]]
 
     merged = est.merge(exact, on=["q_id", "query_type", "filter"], how="inner")
     return merged
+
+
+def _plot_tiered_gls_accuracy(acc: pd.DataFrame, tier_cols: list[str],
+                              output_dir: Path, reference: str = "k=2048") -> None:
+    """Three neighborhood radii against exact k=2048 GLS."""
+    labels = {
+        "gls_correlation_1": "12-bit (B=4096)",
+        "gls_correlation_10": "8-bit (B=256)",
+        "gls_correlation_100": "4-bit (B=16)",
+    }
+    qt_colors = {"flex_movies_sim": "#1a5276", "flex_reviews_sim": "#b9770e"}
+    rows = []
+    for col in tier_cols:
+        sub = acc.dropna(subset=[col, "rho_exact"]).copy()
+        sub["rho_hat"] = sub[col]
+        rows.append({"tier": labels[col], "group": "overall", **_accuracy_metrics(sub)})
+        for qt, group in sub.groupby("query_type"):
+            rows.append({"tier": labels[col], "group": qt, **_accuracy_metrics(group)})
+    metrics = pd.DataFrame(rows)
+    metrics.to_csv(output_dir / "gls_estimator_metrics_tiers.csv", index=False)
+    print(f"\nTiered GLS estimator accuracy vs exact rho ({reference}):")
+    print(metrics.to_string(index=False))
+
+    lim = [-1.05, 1.05]
+    edges = np.linspace(-1, 1, 12)
+    fig, axes = plt.subplots(2, 3, figsize=(15, 9))
+    for ax, col in zip(axes[0], tier_cols):
+        for qt, sub in acc.groupby("query_type"):
+            ax.scatter(
+                sub["rho_exact"], sub[col], s=10, alpha=0.35,
+                c=qt_colors.get(qt, "gray"),
+                label=qt.replace("flex_", "").replace("_sim", ""),
+            )
+        ax.plot(lim, lim, "k--", lw=1, alpha=0.7)
+        ov = metrics[(metrics["tier"] == labels[col]) & (metrics["group"] == "overall")].iloc[0]
+        ax.set_xlim(lim)
+        ax.set_ylim(lim)
+        ax.set_xlabel(f"Exact GLS ({reference})")
+        ax.set_ylabel("Tier estimate")
+        ax.set_title(
+            f"{labels[col]}\nRMSE={ov['rmse']:.3f}  Spearman={ov['spearman']:.3f}"
+            f"  bias={ov['bias']:+.3f}"
+        )
+        ax.grid(True, alpha=0.3)
+    axes[0, 0].legend(loc="upper left", fontsize=8)
+
+    ax = axes[1, 0]
+    for col in tier_cols:
+        tmp = acc.copy()
+        tmp["bin"] = pd.cut(tmp[col], edges)
+        cal = tmp.groupby("bin", observed=True).agg(
+            x=(col, "mean"), y=("rho_exact", "mean")).dropna()
+        ax.plot(cal["x"], cal["y"], "o-", label=labels[col])
+    ax.plot(lim, lim, "k--", lw=1, alpha=0.7)
+    ax.set_xlim(lim)
+    ax.set_ylim(lim)
+    ax.set_xlabel("Binned tier estimate")
+    ax.set_ylabel("Mean exact rho")
+    ax.set_title("Calibration")
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
+
+    ax = axes[1, 1]
+    for col in tier_cols:
+        tmp = acc.copy()
+        tmp["err"] = tmp[col] - tmp["rho_exact"]
+        tmp["bin"] = pd.cut(tmp["rho_exact"], edges)
+        binned = tmp.groupby("bin", observed=True).agg(
+            x=("rho_exact", "mean"), e=("err", "mean")).dropna()
+        ax.plot(binned["x"], binned["e"], "o-", label=labels[col])
+    ax.axhline(0, color="k", lw=1)
+    ax.set_xlabel("Exact rho")
+    ax.set_ylabel("Mean error")
+    ax.set_title("Bias vs exact correlation")
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
+
+    ax = axes[1, 2]
+    plot_df = acc if "sel_bin" in acc.columns else acc.copy()
+    if "sel_bin" not in plot_df.columns:
+        plot_df["sel_bin"] = pd.cut(
+            plot_df["selectivity"],
+            bins=[0, 0.01, 0.05, 0.1, 0.2, 1.0],
+            labels=["<1%", "1-5%", "5-10%", "10-20%", ">20%"],
+        )
+    bins = [b for b in plot_df["sel_bin"].cat.categories if (plot_df["sel_bin"] == b).any()]
+    x = np.arange(len(bins))
+    width = 0.25
+    for i, col in enumerate(tier_cols):
+        rmses = []
+        for b in bins:
+            sub = plot_df[plot_df["sel_bin"] == b].copy()
+            sub["rho_hat"] = sub[col]
+            rmses.append(_accuracy_metrics(sub)["rmse"] if len(sub) else np.nan)
+        ax.bar(x + (i - 1) * width, rmses, width, label=labels[col])
+    zero = []
+    for b in bins:
+        sub = plot_df[plot_df["sel_bin"] == b]
+        zero.append(float(np.sqrt(np.mean(sub["rho_exact"] ** 2))) if len(sub) else np.nan)
+    ax.plot(x, zero, "k--", label="rho=0 baseline")
+    ax.set_xticks(x)
+    ax.set_xticklabels([str(b) for b in bins])
+    ax.set_xlabel("Filter selectivity")
+    ax.set_ylabel("RMSE")
+    ax.set_title("Accuracy by selectivity")
+    ax.legend(fontsize=8)
+    ax.grid(True, axis="y", alpha=0.3)
+
+    fig.suptitle(
+        f"PQ-GLS codebook tiers (12-bit / 8-bit / 4-bit) vs exact {reference}",
+        fontsize=13,
+    )
+    fig.tight_layout(rect=[0, 0, 1, 0.97])
+    fig.savefig(output_dir / "gls_estimator_accuracy.png", dpi=200, bbox_inches="tight")
+    fig.savefig(output_dir / "gls_estimator_accuracy.pdf", bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved tiered accuracy plot: {output_dir / 'gls_estimator_accuracy.png'}")
 
 
 def plot_gls_estimator_comparison(
@@ -1150,6 +1455,7 @@ def plot_gls_estimator_comparison(
     est_stats_path: Path,
     output_dir: Path,
     runtime_baseline_path: Path | None = None,
+    reference: str = "k=2048",
 ):
     """Accuracy + runtime comparison of GLS-CorE estimates vs exact GLS (k=2048).
 
@@ -1164,6 +1470,8 @@ def plot_gls_estimator_comparison(
     if acc.empty:
         print("No paired GLS data for estimator comparison")
         return
+    tier_cols = [c for c in ("gls_correlation_1", "gls_correlation_10",
+                             "gls_correlation_100") if c in acc.columns]
 
     # --- metrics tables -----------------------------------------------------
     rows = [{"group": "overall", **_accuracy_metrics(acc)}]
@@ -1171,7 +1479,7 @@ def plot_gls_estimator_comparison(
         rows.append({"group": qt, **_accuracy_metrics(sub)})
     metrics = pd.DataFrame(rows)
     metrics.to_csv(output_dir / "gls_estimator_metrics.csv", index=False)
-    print("\nGLS estimator accuracy (rho_hat vs exact rho, k=2048):")
+    print(f"\nGLS estimator accuracy (rho_hat vs exact rho, {reference}):")
     print(metrics.to_string(index=False))
 
     acc = acc.copy()
@@ -1180,11 +1488,22 @@ def plot_gls_estimator_comparison(
         bins=[0, 0.01, 0.05, 0.1, 0.2, 1.0],
         labels=["<1%", "1-5%", "5-10%", "10-20%", ">20%"],
     )
-    by_sel = (
-        acc.groupby("sel_bin", observed=True)
-        .apply(lambda s: pd.Series(_accuracy_metrics(s)), include_groups=False)
-        .reset_index()
-    )
+    sel_rows = []
+    tier_labels = {
+        "gls_correlation_1": "12-bit (B=4096)",
+        "gls_correlation_10": "8-bit (B=256)",
+        "gls_correlation_100": "4-bit (B=16)",
+    }
+    tier_for_sel = [("primary", "rho_hat")] + [
+        (tier_labels[c], c) for c in tier_cols
+    ]
+    for b, g in acc.groupby("sel_bin", observed=True):
+        for tname, col in tier_for_sel:
+            sub = g.copy()
+            if col != "rho_hat":
+                sub["rho_hat"] = sub[col]
+            sel_rows.append({"sel_bin": str(b), "tier": tname, **_accuracy_metrics(sub)})
+    by_sel = pd.DataFrame(sel_rows)
     by_sel.to_csv(output_dir / "gls_estimator_accuracy_by_selectivity.csv", index=False)
 
     qt_colors = {"flex_movies_sim": "#1a5276", "flex_reviews_sim": "#b9770e"}
@@ -1200,7 +1519,7 @@ def plot_gls_estimator_comparison(
     ax.plot(lim, lim, "k--", lw=1, alpha=0.7, label="y = x")
     ov = metrics[metrics["group"] == "overall"].iloc[0]
     ax.set_xlim(lim); ax.set_ylim(lim)
-    ax.set_xlabel("Exact GLS correlation (k=2048)")
+    ax.set_xlabel(f"Exact GLS correlation ({reference})")
     ax.set_ylabel("Estimated GLS correlation (GLS-CorE)")
     ax.set_title(f"Estimated vs exact\nRMSE={ov['rmse']:.3f}  Spearman={ov['spearman']:.3f}  "
                  f"bias={ov['bias']:+.3f}  (n={int(ov['n'])})")
@@ -1251,10 +1570,14 @@ def plot_gls_estimator_comparison(
 
     fig.suptitle("GLS-CorE estimator accuracy vs exact GLS correlation", fontsize=14)
     fig.tight_layout(rect=[0, 0, 1, 0.98])
-    fig.savefig(output_dir / "gls_estimator_accuracy.png", dpi=200, bbox_inches="tight")
-    fig.savefig(output_dir / "gls_estimator_accuracy.pdf", bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved accuracy plot: {output_dir / 'gls_estimator_accuracy.png'}")
+    if len(tier_cols) == 3:
+        plt.close(fig)
+        _plot_tiered_gls_accuracy(acc, tier_cols, output_dir, reference=reference)
+    else:
+        fig.savefig(output_dir / "gls_estimator_accuracy.png", dpi=200, bbox_inches="tight")
+        fig.savefig(output_dir / "gls_estimator_accuracy.pdf", bbox_inches="tight")
+        plt.close(fig)
+        print(f"Saved accuracy plot: {output_dir / 'gls_estimator_accuracy.png'}")
 
     # --- runtime figure -----------------------------------------------------
     baseline = {}
@@ -1323,7 +1646,7 @@ def main():
     )
     parser.add_argument(
         "--gls-est-stats",
-        default="data/datasets/MoRe_large/stats/gls_correlation_estimates_ivf_lsek2048_a1_0.csv",
+        default="data/datasets/MoRe_large/stats/gls_correlation_estimates_pq_tiers1-10-100_cap200_a1_0.csv",
         help="GLS-CorE estimated correlation stats from glscore",
     )
     parser.add_argument(
@@ -1333,6 +1656,11 @@ def main():
     )
     parser.add_argument("--recall-target", type=float, default=RECALL_TARGET)
     parser.add_argument("--output-dir", default="analysis/plots/query_optimizer")
+    parser.add_argument(
+        "--rebuild-csv",
+        action="store_true",
+        help="Rebuild all_query_results.csv from HDF5 even if it already exists",
+    )
     args = parser.parse_args()
 
     root = Path(__file__).resolve().parent.parent
@@ -1343,58 +1671,88 @@ def main():
     output_dir = root / args.output_dir
     gls_est_output_dir = root / args.gls_est_output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    print("Building results dataframe from HDF5...")
-    df_base = build_results_df(results_dir, root_data, args.dataset_size)
-    if df_base.empty:
-        print("No results found!")
-        return
-
-    print(f"  {len(df_base)} rows, {df_base['algorithm'].nunique()} algorithms")
-    df = attach_gls_correlation(df_base, exact_gls_stats, root_data, args.dataset_size)
+    tag_dir = output_dir / recall_tag(args.recall_target)
+    tag_dir.mkdir(parents=True, exist_ok=True)
+    rt = format_recall_target(args.recall_target)
 
     csv_path = output_dir / "all_query_results.csv"
-    df.to_csv(csv_path, index=False)
-    print(f"Saved {csv_path}")
+    df_base = None
+    if csv_path.is_file() and not args.rebuild_csv:
+        print(f"Reusing {csv_path}")
+        df = pd.read_csv(csv_path)
+        if df.empty:
+            print("No results found!")
+            return
+        print(f"  {len(df)} rows, {df['algorithm'].nunique()} algorithms")
+    else:
+        print("Building results dataframe from HDF5...")
+        df_base = build_results_df(results_dir, root_data, args.dataset_size)
+        if df_base.empty:
+            print("No results found!")
+            return
+        print(f"  {len(df_base)} rows, {df_base['algorithm'].nunique()} algorithms")
+        df = attach_gls_correlation(df_base, exact_gls_stats, root_data, args.dataset_size)
+        df.to_csv(csv_path, index=False)
+        print(f"Saved {csv_path}")
 
-    print("\n=== Brute-force recall check ===")
-    bf_summary = verify_brute_force(df)
-    print(bf_summary.to_string(index=False))
-    bf_summary.to_csv(output_dir / "brute_force_recall_check.csv", index=False)
+    k10 = df_is_k10_only(df)
+    bf_path = output_dir / "brute_force_recall_check.csv"
+    if args.rebuild_csv or not bf_path.is_file():
+        print("\n=== Brute-force recall check ===")
+        bf_summary = verify_brute_force(df)
+        print(bf_summary.to_string(index=False))
+        bf_summary.to_csv(bf_path, index=False)
 
-    print(f"\n=== Best hyperparameters (mean recall >= {args.recall_target}) ===")
+    print(f"\n=== Best hyperparameters (mean recall >= {rt}) ===")
     best_hp = find_best_hyperparams(df, args.recall_target)
     print(best_hp.to_string(index=False))
-    best_hp.to_csv(output_dir / "best_hyperparameters.csv", index=False)
+    best_hp.to_csv(tag_dir / "best_hyperparameters.csv", index=False)
 
-    print(f"\n=== Hyperparameter sweep & recall≥{args.recall_target} recommendations ===")
+    print(f"\n=== Hyperparameter sweep & recall≥{rt} recommendations ===")
     hp_sweep, hp_recs = analyze_hyperparam_recommendations(df, args.recall_target)
-    hp_sweep.to_csv(output_dir / "hyperparam_sweep.csv", index=False)
-    hp_recs.to_csv(output_dir / "hyperparam_recommendations.csv", index=False)
+    sweep_path = output_dir / "hyperparam_sweep.csv"
+    if args.rebuild_csv or not sweep_path.is_file():
+        hp_sweep.to_csv(sweep_path, index=False)
+    hp_recs.to_csv(tag_dir / "hyperparam_recommendations.csv", index=False)
     print(hp_sweep.to_string(index=False))
     print("\nRecommendations:")
     for _, row in hp_recs.iterrows():
         print(f"  {row['label']}: {row['recommended_eval_hyperparams']}")
 
-    print(f"\n=== In-system oracle speedup (best HNSW/IVF per query, recall ≥ {args.recall_target}) ===")
+    print(f"\n=== In-system oracle speedup (best HNSW/IVF per query, recall ≥ {rt}) ===")
     speedup_df = compute_system_oracle_speedup(df, best_hp, args.recall_target)
-    speedup_df.to_csv(output_dir / "system_oracle_speedup.csv", index=False)
+    speedup_df.to_csv(tag_dir / "system_oracle_speedup.csv", index=False)
     print(speedup_df.to_string(index=False))
-    plot_system_speedup(speedup_df, output_dir / "system_oracle_speedup.png", args.recall_target)
+    plot_system_speedup(
+        speedup_df, tag_dir / "system_oracle_speedup.png", args.recall_target, k10_footnote=k10
+    )
 
-    print("\n=== Generating plots (exact GLS, k=2048) ===")
-    generate_scatter_plots(df, best_hp, output_dir, args.recall_target, gls_source="exact")
-    plot_qps_recall_frontier(df, best_hp, output_dir, args.recall_target)
-    plot_faiss_all_qps_recall_frontier(df, best_hp, output_dir, args.recall_target)
+    print(f"\n=== Generating plots (exact GLS, k=2048) -> {tag_dir} ===")
+    generate_scatter_plots(
+        df, best_hp, tag_dir, args.recall_target, gls_source="exact", k10_footnote=k10
+    )
+    plot_qps_recall_frontier(df, best_hp, tag_dir, args.recall_target, k10_footnote=k10)
+    plot_faiss_all_qps_recall_frontier(df, best_hp, tag_dir, args.recall_target, k10_footnote=k10)
 
-    if gls_est_stats.is_file():
-        print(f"\n=== Generating plots (estimated GLS) -> {gls_est_output_dir} ===")
-        gls_est_output_dir.mkdir(parents=True, exist_ok=True)
-        df_est = attach_gls_correlation(df_base, gls_est_stats, root_data, args.dataset_size)
-        df_est.to_csv(gls_est_output_dir / "all_query_results.csv", index=False)
-        print(f"Saved {gls_est_output_dir / 'all_query_results.csv'}")
+    est_csv = gls_est_output_dir / "all_query_results.csv"
+    est_plot_dir = tag_dir / "gls_est"
+    if est_csv.is_file() and not args.rebuild_csv:
+        print(f"\n=== Generating plots (estimated GLS) -> {est_plot_dir} ===")
+        df_est = pd.read_csv(est_csv)
         generate_scatter_plots(
-            df_est, best_hp, gls_est_output_dir, args.recall_target, gls_source="estimated"
+            df_est, best_hp, est_plot_dir, args.recall_target, gls_source="estimated", k10_footnote=k10
+        )
+    elif gls_est_stats.is_file():
+        print(f"\n=== Generating plots (estimated GLS) -> {est_plot_dir} ===")
+        gls_est_output_dir.mkdir(parents=True, exist_ok=True)
+        if df_base is None:
+            print("Building results dataframe from HDF5 for estimated GLS...")
+            df_base = build_results_df(results_dir, root_data, args.dataset_size)
+        df_est = attach_gls_correlation(df_base, gls_est_stats, root_data, args.dataset_size)
+        df_est.to_csv(est_csv, index=False)
+        print(f"Saved {est_csv}")
+        generate_scatter_plots(
+            df_est, best_hp, est_plot_dir, args.recall_target, gls_source="estimated", k10_footnote=k10
         )
 
         print("\n=== GLS estimator accuracy & runtime vs exact GLS (k=2048) ===")

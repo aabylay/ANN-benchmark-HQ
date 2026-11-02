@@ -99,17 +99,46 @@ def get_train_dataset(dataset_type: str, dataset_size: str) -> Tuple[h5py.File, 
         Tuple[numpy.ndarray, numpy.ndarray, numpy.ndarray]: A tuple containing the 
             training IDs, training data, and training attributes.
     """
+    if dataset_type == "cases":
+        from ann_benchmarks.corpora import pack_root
 
-    hdf5_filename = f"data/datasets/MoRe_{dataset_size}/datasets/{dataset_type}_dataset_0.hdf5"
+        hdf5_filename = os.path.join(
+            pack_root("caselaw", dataset_size), "datasets", "cases_dataset_0.hdf5"
+        )
+    else:
+        hdf5_filename = f"data/datasets/MoRe_{dataset_size}/datasets/{dataset_type}_dataset_0.hdf5"
     print("Reading dataset with name:", hdf5_filename)
     hdf5_file = h5py.File(hdf5_filename, "r")
     
     if "dimension" in hdf5_file.attrs: dimension = int(hdf5_file.attrs["dimension"])
+    elif "train_vector" in hdf5_file:
+        dimension = len(hdf5_file["train_vector"][0])
     elif "train_mvector" in hdf5_file:
         dimension = len(hdf5_file["train_mvector"][0])
     elif "train_rvector" in hdf5_file:
         dimension = len(hdf5_file["train_rvector"][0])
     return hdf5_file, dimension
+
+
+def native_pack_path(dataset_type: str = "cases") -> str:
+    """Path to a native CaseLaw workload pack HDF5."""
+    from ann_benchmarks.corpora import pack_root
+
+    return os.path.join(pack_root("caselaw"), "native", f"{dataset_type}_native.hdf5")
+
+
+def get_native_workload_dataset(dataset_type: str = "cases") -> h5py.File:
+    """Open the CaseLaw native workload pack HDF5."""
+    hdf5_filename = native_pack_path(dataset_type)
+    print("Reading native workload pack:", hdf5_filename)
+    return h5py.File(hdf5_filename, "r")
+
+
+def sample_manifest_path(corpus: str = "caselaw") -> str:
+    """Path to sample_manifest.json for the given corpus."""
+    from ann_benchmarks.corpora import pack_root
+
+    return os.path.join(pack_root(corpus), "sample_manifest.json")
 
 
 # Function to get the filters for a specific dataset type from an HDF5 file.
