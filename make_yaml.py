@@ -286,7 +286,7 @@ def make_yaml(algo, m=None, ef_c=None, ef_s_list=None, ivf_algo=False, dataset_s
         }
 
     elif algo == "pgvector_bf":
-        # PG-Vector brute-force (exact, no index) with SQL WHERE post-filtering.
+        # PG-Vector brute-force (exact distance order, attribute B-trees, no vector index).
         output_path = f"ann_benchmarks/algorithms/pgvector_bf/config.yml"
         data = {
             "float": {

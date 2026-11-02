@@ -118,19 +118,11 @@ class PGVector(BaseANN):
             raise
 
         # Exact plan: attribute indexes for prefilter, no vector index.
+        # Filter values are FLOAT8 (see copy_items_rows), so these indexes
+        # compare the same numbers the predicate literals use.
         print("brute-force plan: creating attribute indexes (no vector index)...")
         create_attr_indexes(cur, dataset_type)
         cur.execute("ANALYZE items")
-        cur.execute("SELECT indexname FROM pg_indexes WHERE tablename = 'items'")
-        leftover = [row[0] for row in cur.fetchall()]
-        if leftover:
-            raise RuntimeError(
-                f"pgvector_bf expected no indexes on items, found {leftover}"
-            )
-        # Belt-and-suspenders: even if a leftover index appeared, never use it.
-        cur.execute("SET enable_indexscan = off")
-        cur.execute("SET enable_bitmapscan = off")
-        cur.execute("SET enable_indexonlyscan = off")
         print("done!")
 
         self._cur = cur

@@ -17,7 +17,7 @@ The current branch (`fannsqo`) focuses on **query plan selection**: comparing pr
 | FAISS | HNSW post | `hnsw(faiss)-post` | Over-fetch candidates, filter in NumPy |
 | FAISS | IVF pre | `faiss-ivf` | Bitset pre-filter during IVF search |
 | FAISS | IVF post | `faiss-ivf-post` | Over-fetch candidates, filter in NumPy |
-| pgvector | Brute force | `pgvector_bf` | SQL `WHERE` post-filter, no index |
+| pgvector | Brute force | `pgvector_bf` | SQL `WHERE` with attribute B-tree indexes, no vector index |
 | pgvector | HNSW | `pgvector` | Iterative scan post-filter |
 | pgvector | IVF | `pgvector_ivf` | Iterative scan post-filter |
 
